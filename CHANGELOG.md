@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ## 2026-07-04
 
+### Added - Vinyl toggle button on Deck Controls screen
+
+Added a VINYL toggle button for each deck on the Deck Controls screen:
+
+- New 4th row button per deck labeled "VINYL" using `THEME_SECONDARY` color.
+- MIDI notes: `NOTE_D1_VINYL` (26) for deck 1, `NOTE_D2_VINYL` (27) for deck 2.
+  Map each to the Vinyl Mode On/Off in Rekordbox MIDI Learn.
+- Row height reduced from 48px to 38px and gap from 8px to 6px to fit all 4
+  buttons within the 240px display height.
+
+### Changed - Effects screen redesigned: per-deck FX buttons + paddle switch
+
+Replaced the single rotary-knob FX selector with a two-column per-deck layout:
+
+- **Each deck now has 3 FX toggle buttons** (FX1, FX2, FX3) that arm which
+  effect slots are selected.
+- **A large paddle switch per deck** activates/deactivates all armed FX slots
+  at once. The paddle sends a toggle Note On for each selected FX when flipped
+  down (active) or up (inactive).
+- Removed the rotary knob (FX NEXT/PREV) and global FX ON/OFF / DECK ASSIGN
+  buttons - the new per-deck model replaces all of those controls.
+- MIDI notes updated: `NOTE_FX_D1_1`..`NOTE_FX_D1_3` (30-32) for deck 1,
+  `NOTE_FX_D2_1`..`NOTE_FX_D2_3` (33-35) for deck 2. Map each to the
+  corresponding FX slot On/Off in Rekordbox MIDI Learn.
+
 ### Changed - Stems SOLO now uses Rekordbox StemsMode function
 
 Rekordbox has a native "StemsMode" function that switches between normal mute

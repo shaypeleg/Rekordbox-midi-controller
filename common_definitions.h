@@ -50,16 +50,20 @@ extern uint16_t THEME_TEXT_DIM;
 #define NOTE_D2_MASTER_TEMPO 23
 #define NOTE_D2_QUANTIZE     24
 #define NOTE_D2_SLIP         25
+#define NOTE_D1_VINYL        26
+#define NOTE_D2_VINYL        27
 
 // Effects screen - Note On/Off
-// NOTE_FX_NEXT/PREV map to Rekordbox's "FX1-1Select" (move up the FX list).
-// PREV only works if you edit the exported MIDI CSV to add a
-// "FX1-1Select.Down" row - see README for details.
-#define NOTE_FX_NEXT      30
-#define NOTE_FX_PREV      31
-#define NOTE_FX_ONOFF     32
-#define NOTE_FX_ASSIGN_D1 33
-#define NOTE_FX_ASSIGN_D2 34
+// Per-deck FX slot toggles: FX1/FX2/FX3 for each deck, plus an
+// independent paddle switch per deck that sends its own MIDI note.
+#define NOTE_FX_D1_1 30
+#define NOTE_FX_D1_2 31
+#define NOTE_FX_D1_3 32
+#define NOTE_FX_D2_1 33
+#define NOTE_FX_D2_2 34
+#define NOTE_FX_D2_3 35
+#define NOTE_FX_PADDLE_D1 36
+#define NOTE_FX_PADDLE_D2 37
 
 // Needle Search screen - CC, absolute value 0-127 (maps to "NeedleSearch")
 #define CC_NEEDLE_D1 40

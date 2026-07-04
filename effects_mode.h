@@ -5,133 +5,142 @@
 #include "ui_elements.h"
 #include "midi_utils.h"
 
-// Rekordbox's MIDI Learn only exposes a "move up the FX list" function out
-// of the box (FX1-1Select). We emulate a rotary encoder with a circular drag
-// gesture: every FX_TICK_THRESHOLD degrees of rotation fires one NEXT/PREV
-// tick, so the knob feels continuous even though it drives a discrete list.
-#define FX_KNOB_CX 160
-#define FX_KNOB_CY 110
-#define FX_KNOB_R 52
-#define FX_KNOB_TOUCH_R 78
-#define FX_TICK_THRESHOLD 22.0
+// Layout constants
+#define FX_COL_L_X 5
+#define FX_COL_R_X 165
+#define FX_COL_W 150
+#define FX_BTN_W 44
+#define FX_BTN_H 28
+#define FX_BTN_GAP 6
+#define FX_BTN_Y (CONTENT_Y + 24)
+#define FX_PADDLE_Y (FX_BTN_Y + FX_BTN_H + 14)
+#define FX_PADDLE_W 100
+#define FX_PADDLE_H 120
+#define FX_PADDLE_KNOB_H 40
 
-bool fxOn = false;
-bool fxAssignD1 = false;
-bool fxAssignD2 = false;
-bool fxKnobDragging = false;
-float fxLastAngle = 0;
-float fxKnobVisualAngle = 0;
-float fxTickAccumulator = 0;
+// Per-deck state
+bool fxD1Active[3] = {false, false, false};
+bool fxD2Active[3] = {false, false, false};
+bool fxD1PaddleDown = false;
+bool fxD2PaddleDown = false;
 
-// Function declarations
+// MIDI notes per deck (indexed 0-2 for FX1-FX3)
+const byte fxD1Notes[3] = {NOTE_FX_D1_1, NOTE_FX_D1_2, NOTE_FX_D1_3};
+const byte fxD2Notes[3] = {NOTE_FX_D2_1, NOTE_FX_D2_2, NOTE_FX_D2_3};
+
 void initializeEffectsMode();
 void drawEffectsMode();
 void handleEffectsMode();
-void drawFxKnob();
-void drawFxControls();
-float fxAngleForTouch(int x, int y);
+void drawFxDeckColumn(int colX, int deck);
+void drawFxPaddle(int x, bool down);
 
 void initializeEffectsMode() {
-  fxOn = false;
-  fxAssignD1 = false;
-  fxAssignD2 = false;
-  fxKnobDragging = false;
-  fxKnobVisualAngle = 0;
-  fxTickAccumulator = 0;
+  for (int i = 0; i < 3; i++) {
+    fxD1Active[i] = false;
+    fxD2Active[i] = false;
+  }
+  fxD1PaddleDown = false;
+  fxD2PaddleDown = false;
 }
 
 void drawEffectsMode() {
   tft.fillScreen(THEME_BG);
   drawHeader("EFFECTS");
-  drawFxKnob();
-  drawFxControls();
+
+  int divX = 160;
+  tft.drawFastVLine(divX, CONTENT_Y, 240 - CONTENT_Y, THEME_SURFACE);
+
+  drawFxDeckColumn(FX_COL_L_X, 1);
+  drawFxDeckColumn(FX_COL_R_X, 2);
 }
 
-void drawFxKnob() {
-  tft.fillCircle(FX_KNOB_CX, FX_KNOB_CY, FX_KNOB_R, THEME_SURFACE);
-  tft.drawCircle(FX_KNOB_CX, FX_KNOB_CY, FX_KNOB_R, THEME_PRIMARY);
-  tft.drawCircle(FX_KNOB_CX, FX_KNOB_CY, FX_KNOB_R - 1, THEME_PRIMARY);
+void drawFxDeckColumn(int colX, int deck) {
+  bool *active = (deck == 1) ? fxD1Active : fxD2Active;
+  bool paddleDown = (deck == 1) ? fxD1PaddleDown : fxD2PaddleDown;
 
-  float rad = fxKnobVisualAngle * PI / 180.0;
-  int px = FX_KNOB_CX + (int)((FX_KNOB_R - 8) * cos(rad));
-  int py = FX_KNOB_CY + (int)((FX_KNOB_R - 8) * sin(rad));
-  tft.drawLine(FX_KNOB_CX, FX_KNOB_CY, px, py, THEME_ACCENT);
-  tft.fillCircle(FX_KNOB_CX, FX_KNOB_CY, 6, THEME_ACCENT);
+  // Deck label
+  tft.setTextColor(THEME_TEXT, THEME_BG);
+  String label = "DECK " + String(deck);
+  tft.drawCentreString(label, colX + FX_COL_W / 2, CONTENT_Y + 2, 2);
+
+  // FX1, FX2, FX3 buttons in a row
+  int btnStartX = colX + (FX_COL_W - (FX_BTN_W * 3 + FX_BTN_GAP * 2)) / 2;
+  for (int i = 0; i < 3; i++) {
+    int bx = btnStartX + i * (FX_BTN_W + FX_BTN_GAP);
+    String name = "FX" + String(i + 1);
+    drawToggleButton(bx, FX_BTN_Y, FX_BTN_W, FX_BTN_H, name,
+                     THEME_PRIMARY, active[i]);
+  }
+
+  // Paddle switch (independent of FX buttons)
+  int paddleX = colX + (FX_COL_W - FX_PADDLE_W) / 2;
+  drawFxPaddle(paddleX, paddleDown);
 }
 
-void drawFxControls() {
-  drawToggleButton(10, 176, 145, 30, "DECK 1", THEME_SECONDARY, fxAssignD1);
-  drawToggleButton(165, 176, 145, 30, "DECK 2", THEME_SECONDARY, fxAssignD2);
-  drawToggleButton(85, 210, 150, 28, "FX ON/OFF", THEME_WARNING, fxOn);
-}
+void drawFxPaddle(int x, bool down) {
+  uint16_t borderColor = THEME_PRIMARY;
 
-float fxAngleForTouch(int x, int y) {
-  return atan2((float)(y - FX_KNOB_CY), (float)(x - FX_KNOB_CX)) * 180.0 / PI;
+  tft.fillRoundRect(x, FX_PADDLE_Y, FX_PADDLE_W, FX_PADDLE_H, 10,
+                    THEME_SURFACE);
+  tft.drawRoundRect(x, FX_PADDLE_Y, FX_PADDLE_W, FX_PADDLE_H, 10,
+                    borderColor);
+
+  tft.setTextColor(THEME_TEXT_DIM, THEME_SURFACE);
+  tft.drawCentreString("ON", x + FX_PADDLE_W / 2, FX_PADDLE_Y + 8, 1);
+  tft.drawCentreString("OFF", x + FX_PADDLE_W / 2,
+                       FX_PADDLE_Y + FX_PADDLE_H - 18, 1);
+
+  int knobY = down
+    ? (FX_PADDLE_Y + FX_PADDLE_H - FX_PADDLE_KNOB_H - 4)
+    : (FX_PADDLE_Y + 4);
+
+  uint16_t knobColor = down ? THEME_ACCENT : THEME_TEXT_DIM;
+
+  tft.fillRoundRect(x + 4, knobY, FX_PADDLE_W - 8, FX_PADDLE_KNOB_H, 8,
+                    knobColor);
+
+  tft.setTextColor(THEME_BG, knobColor);
+  tft.drawCentreString(down ? "ACTIVE" : "PUSH", x + FX_PADDLE_W / 2,
+                       knobY + FX_PADDLE_KNOB_H / 2 - 6, 2);
 }
 
 void handleEffectsMode() {
-  if (touch.justPressed && isButtonPressed(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H)) {
+  if (touch.justPressed &&
+      isButtonPressed(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H)) {
     exitToMenu();
     return;
   }
 
-  if (touch.justPressed) {
-    if (isButtonPressed(10, 176, 145, 30)) {
-      fxAssignD1 = !fxAssignD1;
-      sendToggleNote(NOTE_FX_ASSIGN_D1);
-      drawFxControls();
+  if (!touch.justPressed) return;
+
+  for (int deck = 0; deck < 2; deck++) {
+    int colX = (deck == 0) ? FX_COL_L_X : FX_COL_R_X;
+    bool *active = (deck == 0) ? fxD1Active : fxD2Active;
+    const byte *notes = (deck == 0) ? fxD1Notes : fxD2Notes;
+
+    // FX buttons
+    int btnStartX = colX + (FX_COL_W - (FX_BTN_W * 3 + FX_BTN_GAP * 2)) / 2;
+    for (int i = 0; i < 3; i++) {
+      int bx = btnStartX + i * (FX_BTN_W + FX_BTN_GAP);
+      if (isButtonPressed(bx, FX_BTN_Y, FX_BTN_W, FX_BTN_H)) {
+        active[i] = !active[i];
+        sendToggleNote(notes[i]);
+        drawFxDeckColumn(colX, deck + 1);
+        return;
+      }
+    }
+
+    // Paddle - sends its own dedicated note, independent of FX buttons
+    int paddleX = colX + (FX_COL_W - FX_PADDLE_W) / 2;
+    if (isButtonPressed(paddleX, FX_PADDLE_Y, FX_PADDLE_W, FX_PADDLE_H)) {
+      bool *paddleDown = (deck == 0) ? &fxD1PaddleDown : &fxD2PaddleDown;
+      byte paddleNote = (deck == 0) ? NOTE_FX_PADDLE_D1 : NOTE_FX_PADDLE_D2;
+
+      *paddleDown = !(*paddleDown);
+      sendToggleNote(paddleNote);
+      drawFxDeckColumn(colX, deck + 1);
       return;
     }
-    if (isButtonPressed(165, 176, 145, 30)) {
-      fxAssignD2 = !fxAssignD2;
-      sendToggleNote(NOTE_FX_ASSIGN_D2);
-      drawFxControls();
-      return;
-    }
-    if (isButtonPressed(85, 210, 150, 28)) {
-      fxOn = !fxOn;
-      sendToggleNote(NOTE_FX_ONOFF);
-      drawFxControls();
-      return;
-    }
-  }
-
-  // Rotary knob gesture - only while dragging within the knob's touch radius
-  int dx = touch.x - FX_KNOB_CX;
-  int dy = touch.y - FX_KNOB_CY;
-  bool nearKnob = (dx * dx + dy * dy) <= (FX_KNOB_TOUCH_R * FX_KNOB_TOUCH_R);
-
-  if (touch.isPressed && nearKnob) {
-    float angle = fxAngleForTouch(touch.x, touch.y);
-
-    if (!fxKnobDragging) {
-      fxKnobDragging = true;
-      fxLastAngle = angle;
-      return;
-    }
-
-    float delta = angle - fxLastAngle;
-    if (delta > 180) delta -= 360;
-    if (delta < -180) delta += 360;
-
-    fxKnobVisualAngle += delta;
-    fxTickAccumulator += delta;
-    fxLastAngle = angle;
-
-    while (fxTickAccumulator >= FX_TICK_THRESHOLD) {
-      sendToggleNote(NOTE_FX_NEXT);
-      Serial.println("FX NEXT");
-      fxTickAccumulator -= FX_TICK_THRESHOLD;
-    }
-    while (fxTickAccumulator <= -FX_TICK_THRESHOLD) {
-      sendToggleNote(NOTE_FX_PREV);
-      Serial.println("FX PREV");
-      fxTickAccumulator += FX_TICK_THRESHOLD;
-    }
-
-    drawFxKnob();
-  } else if (fxKnobDragging) {
-    fxKnobDragging = false;
   }
 }
 
