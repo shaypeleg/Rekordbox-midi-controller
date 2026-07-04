@@ -15,6 +15,7 @@
 #include "deck_controls_mode.h"
 #include "needle_search_mode.h"
 #include "stems_mode.h"
+#include "rb_view_mode.h"
 #include "setup_mode.h"
 #include "ui_elements.h"
 #include "midi_utils.h"
@@ -73,9 +74,10 @@ AppIcon apps[] = {
   {"DECKS", 0x07E0, DECK_CONTROLS},  // Green
   {"SEARCH", 0x001F, NEEDLE_SEARCH}, // Blue
   {"STEMS", 0x781F, STEMS},          // Purple
+  {"VIEW", 0xFDA0, RB_VIEW},         // Orange
 };
 
-int numApps = 4;
+int numApps = 5;
 
 // Small settings shortcut, bottom-right of the menu. Sized smaller than the
 // main function icons (it's a secondary, infrequent action) but still a
@@ -87,8 +89,8 @@ int numApps = 4;
 // Function grid geometry - shared by drawMenu() and handleMenuTouch() so
 // the tap targets can never drift out of sync with what's drawn.
 #define MENU_HEADER_H 54
-#define MENU_ICON_SIZE 64
-#define MENU_ICON_SPACING 14
+#define MENU_ICON_SIZE 52
+#define MENU_ICON_SPACING 10
 #define MENU_GRID_W (numApps * MENU_ICON_SIZE + (numApps - 1) * MENU_ICON_SPACING)
 #define MENU_GRID_X ((320 - MENU_GRID_W) / 2)
 #define MENU_GRID_BLOCK_H (MENU_ICON_SIZE + 5 + 10)
@@ -177,6 +179,7 @@ void setup() {
   initializeDeckControlsMode();
   initializeNeedleSearchMode();
   initializeStemsMode();
+  initializeRbViewMode();
   initializeSetupMode();
   
   drawMenu();
@@ -238,6 +241,9 @@ void loop() {
       break;
     case STEMS:
       handleStemsMode();
+      break;
+    case RB_VIEW:
+      handleRbViewMode();
       break;
     case SETUP:
       handleSetupMode();
@@ -362,6 +368,15 @@ void drawAppGraphics(AppMode mode, int x, int y, int iconSize) {
         }
       }
       break;
+    case RB_VIEW: // monitor with panels
+      {
+        tft.drawRect(centerX - 10, centerY - 8, 20, 14, THEME_BG);
+        tft.drawFastVLine(centerX, centerY - 8, 14, THEME_BG);
+        tft.drawFastHLine(centerX - 10, centerY - 1, 20, THEME_BG);
+        tft.drawFastVLine(centerX, centerY + 6, 5, THEME_BG);
+        tft.drawFastHLine(centerX - 4, centerY + 10, 8, THEME_BG);
+      }
+      break;
     default:
       break; // SETUP has its own gear badge (drawMenuGearButton) - not part of this grid
   }
@@ -397,6 +412,9 @@ void enterMode(AppMode mode) {
       break;
     case STEMS:
       drawStemsMode();
+      break;
+    case RB_VIEW:
+      drawRbViewMode();
       break;
     case SETUP:
       initializeSetupMode(); // always return to Setup Home

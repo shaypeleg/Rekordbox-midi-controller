@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-05
+
+### Added - Rekordbox View screen (panel toggles + wave zoom)
+
+New "RB VIEW" screen accessible from the main menu (orange icon) for toggling
+Rekordbox UI panels on/off and adjusting waveform zoom level:
+
+- **4 panel toggle buttons** arranged in a 2x2 grid:
+  - FX Panel (`NOTE_RBV_FX_PANEL` = 60)
+  - Sampler Panel (`NOTE_RBV_SAMPLER_PANEL` = 61)
+  - Mixer Panel (`NOTE_RBV_MIXER_PANEL` = 62)
+  - Record Panel (`NOTE_RBV_RECORD_PANEL` = 63)
+  Each sends a Note On toggle — map to the corresponding panel show/hide in
+  Rekordbox MIDI Learn.
+- **Wave Zoom slider**: a horizontal drag strip that sends CC 65 (0-127).
+  Map to "WaveZoom" in Rekordbox MIDI Learn. Center position (64) is the
+  default zoom level; drag left to zoom out, right to zoom in.
+- Menu icon grid resized from 64px to 52px icons (with 10px spacing) to
+  accommodate the 5th function button while staying centered on the 320px
+  display.
+
 ## 2026-07-04
 
 ### Added - Vinyl toggle button on Deck Controls screen

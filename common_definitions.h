@@ -85,6 +85,16 @@ extern uint16_t THEME_TEXT_DIM;
 // Global (not per-deck). Map to "ActiveStem Mute/Solo" in Rekordbox MIDI settings.
 #define NOTE_STEMS_MODE_D1  58
 
+// Rekordbox View screen - Note On toggles for panel visibility.
+// Map each to the corresponding Panel On/Off in Rekordbox MIDI Learn.
+#define NOTE_RBV_FX_PANEL      60
+#define NOTE_RBV_SAMPLER_PANEL 61
+#define NOTE_RBV_MIXER_PANEL   62
+#define NOTE_RBV_RECORD_PANEL  63
+
+// Wave Zoom - CC, absolute value 0-127 (maps to "WaveZoom" in Rekordbox)
+#define CC_RBV_WAVE_ZOOM       65
+
 // Touch handling
 struct TouchState {
   bool wasPressed = false;
@@ -101,6 +111,7 @@ enum AppMode {
   DECK_CONTROLS,
   NEEDLE_SEARCH,
   STEMS,
+  RB_VIEW,
   SETUP
 };
 
