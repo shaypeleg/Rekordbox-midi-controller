@@ -25,6 +25,15 @@ bool setupShiftActive = false;
 bool setupSymbolsActive = false;
 #define SETUP_MAX_PASSWORD_LEN 32
 
+// Scroll state for the Setup Home screen. Content is taller than the
+// 240px display, so the user taps a button to reveal the LED section.
+int setupHomeScrollY = 0;
+#define SETUP_SCROLL_MAX     56   // scrolls one section (BT hidden, LED revealed)
+#define SETUP_SCROLL_BTN_X  100   // scroll button geometry
+#define SETUP_SCROLL_BTN_W  120
+#define SETUP_SCROLL_BTN_Y  216
+#define SETUP_SCROLL_BTN_H   22
+
 // Function declarations
 void initializeSetupMode();
 void drawSetupMode();
@@ -39,6 +48,7 @@ void handleSetupKeyboard();
 
 void initializeSetupMode() {
   setupScreen = SETUP_HOME;
+  setupHomeScrollY = 0;
 }
 
 void drawSetupMode() {
@@ -61,14 +71,16 @@ void handleSetupMode() {
 
 void drawSetupHome() {
   tft.fillScreen(THEME_BG);
-  drawHeader("SETUP");
 
-  // Version lives here instead of the main menu.
-  tft.setTextColor(THEME_TEXT_DIM, THEME_SURFACE);
-  tft.drawRightString(APP_VERSION, 312, 10, 1);
+  // All Y positions are offset by the scroll amount. Elements that end
+  // up above y=0 or below y=239 are harmlessly clipped by the TFT driver;
+  // the header is redrawn last to cover anything that leaked into it.
+  int sy = CONTENT_Y - setupHomeScrollY;
+  int wy = sy + 56;
+  int dy = wy + 82;
+  int ly = dy + 42;
 
   // --- Bluetooth ---
-  int sy = CONTENT_Y;
   tft.setTextColor(THEME_ACCENT, THEME_BG);
   tft.drawString("BLUETOOTH", 10, sy, 2);
 
@@ -78,11 +90,9 @@ void drawSetupHome() {
   tft.drawString("Device name: RB-MIDI", 10, sy + 34, 1);
 
   drawRoundButton(210, sy - 2, 100, 28, "RESTART", THEME_SECONDARY);
-
   tft.drawFastHLine(10, sy + 50, 300, THEME_SURFACE);
 
   // --- WiFi ---
-  int wy = sy + 56;
   tft.setTextColor(THEME_ACCENT, THEME_BG);
   tft.drawString("WI-FI", 10, wy, 2);
 
@@ -103,16 +113,42 @@ void drawSetupHome() {
 
   drawRoundButton(10, wy + 36, 145, 32, "SCAN NETWORKS", THEME_PRIMARY);
   drawRoundButton(165, wy + 36, 145, 32, "FORGET NETWORK", THEME_ERROR);
-
   tft.drawFastHLine(10, wy + 76, 300, THEME_SURFACE);
 
   // --- Display theme ---
-  int dy = wy + 82;
   tft.setTextColor(THEME_ACCENT, THEME_BG);
   tft.drawString("DISPLAY", 10, dy, 2);
 
   drawToggleButton(150, dy - 2, 75, 32, "DARK", THEME_PRIMARY, darkMode);
   drawToggleButton(230, dy - 2, 75, 32, "LIGHT", THEME_WARNING, !darkMode);
+
+  // --- LED brightness (only draw divider + section when on-screen) ---
+  if (ly + 30 < 240) {
+    tft.drawFastHLine(10, dy + 36, 300, THEME_SURFACE);
+
+    tft.setTextColor(THEME_ACCENT, THEME_BG);
+    tft.drawString("LED", 10, ly, 2);
+
+    drawRoundButton(150, ly - 2, 40, 32, "-", THEME_SECONDARY);
+    tft.fillRoundRect(194, ly, 62, 28, 4, THEME_SURFACE);
+    tft.setTextColor(THEME_TEXT, THEME_SURFACE);
+    tft.drawCentreString(String(ledBrightness) + "%", 225, ly + 5, 2);
+    drawRoundButton(260, ly - 2, 45, 32, "+", THEME_SECONDARY);
+  }
+
+  // --- Redraw header on top (covers any content that scrolled above) ---
+  drawHeader("SETUP");
+  tft.setTextColor(THEME_TEXT_DIM, THEME_SURFACE);
+  tft.drawRightString(APP_VERSION, 312, 10, 1);
+
+  // --- Scroll button (toggles between top/bottom views) ---
+  if (setupHomeScrollY == 0) {
+    drawRoundButton(SETUP_SCROLL_BTN_X, SETUP_SCROLL_BTN_Y,
+                    SETUP_SCROLL_BTN_W, SETUP_SCROLL_BTN_H, "MORE", THEME_TEXT_DIM);
+  } else {
+    drawRoundButton(SETUP_SCROLL_BTN_X, SETUP_SCROLL_BTN_Y,
+                    SETUP_SCROLL_BTN_W, SETUP_SCROLL_BTN_H, "BACK", THEME_TEXT_DIM);
+  }
 }
 
 void handleSetupHome() {
@@ -122,32 +158,69 @@ void handleSetupHome() {
     exitToMenu();
     return;
   }
-  int sy = CONTENT_Y;
+
+  // Scroll button (toggles between top and bottom views)
+  if (isButtonPressed(SETUP_SCROLL_BTN_X, SETUP_SCROLL_BTN_Y,
+                      SETUP_SCROLL_BTN_W, SETUP_SCROLL_BTN_H)) {
+    setupHomeScrollY = (setupHomeScrollY == 0) ? SETUP_SCROLL_MAX : 0;
+    drawSetupHome();
+    return;
+  }
+
+  // All button Y positions match the scrolled draw positions.
+  int sy = CONTENT_Y - setupHomeScrollY;
   int wy = sy + 56;
   int dy = wy + 82;
-  if (isButtonPressed(210, sy - 2, 100, 28)) {
+  int ly = dy + 42;
+
+  // --- Bluetooth ---
+  if (sy >= 0 && isButtonPressed(210, sy - 2, 100, 28)) {
     BLEDevice::startAdvertising();
     drawSetupHome();
     return;
   }
-  if (isButtonPressed(10, wy + 36, 145, 32)) {
+
+  // --- WiFi ---
+  if (wy + 36 >= CONTENT_Y && isButtonPressed(10, wy + 36, 145, 32)) {
     startWifiScan();
     return;
   }
-  if (isButtonPressed(165, wy + 36, 145, 32)) {
+  if (wy + 36 >= CONTENT_Y && isButtonPressed(165, wy + 36, 145, 32)) {
     forgetNetwork();
     drawSetupHome();
     return;
   }
-  if (isButtonPressed(150, dy - 2, 75, 32)) {
+
+  // --- Display ---
+  if (dy >= CONTENT_Y && isButtonPressed(150, dy - 2, 75, 32)) {
     if (!darkMode) toggleTheme();
     drawSetupHome();
     return;
   }
-  if (isButtonPressed(230, dy - 2, 75, 32)) {
+  if (dy >= CONTENT_Y && isButtonPressed(230, dy - 2, 75, 32)) {
     if (darkMode) toggleTheme();
     drawSetupHome();
     return;
+  }
+
+  // --- LED brightness ---
+  if (ly >= CONTENT_Y && ly < SETUP_SCROLL_BTN_Y) {
+    if (isButtonPressed(150, ly - 2, 40, 32)) {
+      ledBrightness = (ledBrightness >= LED_BRIGHTNESS_STEP)
+                        ? ledBrightness - LED_BRIGHTNESS_STEP : 0;
+      saveLedBrightness();
+      if (deviceConnected) setBackLED(0, 0, (uint16_t)ledBrightness * 255 / 100);
+      drawSetupHome();
+      return;
+    }
+    if (isButtonPressed(260, ly - 2, 45, 32)) {
+      ledBrightness = (ledBrightness <= 100 - LED_BRIGHTNESS_STEP)
+                        ? ledBrightness + LED_BRIGHTNESS_STEP : 100;
+      saveLedBrightness();
+      if (deviceConnected) setBackLED(0, 0, (uint16_t)ledBrightness * 255 / 100);
+      drawSetupHome();
+      return;
+    }
   }
 }
 

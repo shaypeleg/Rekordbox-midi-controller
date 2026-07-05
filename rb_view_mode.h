@@ -20,6 +20,12 @@
 #define RBV_ZOOM_H 50
 #define RBV_ZOOM_Y (RBV_ROW2_Y + RBV_BTN_H + 28)
 
+// Quantize zoom output: only send a new CC when the value changes by at
+// least this many steps.  With STEP=4 the 280px strip yields ~32 discrete
+// zoom levels instead of 128, so small finger jitter doesn't flood
+// Rekordbox with rapid zoom changes.
+#define RBV_ZOOM_STEP 4
+
 // Panel toggle states
 bool rbvFxPanel = false;
 bool rbvSamplerPanel = false;
@@ -114,8 +120,10 @@ void handleRbViewMode() {
                   touch.y <= RBV_ZOOM_Y + RBV_ZOOM_H;
 
   if (inSlider) {
-    int value = map(touch.x, RBV_ZOOM_X, RBV_ZOOM_X + RBV_ZOOM_W, 0, 127);
-    value = constrain(value, 0, 127);
+    int raw = map(touch.x, RBV_ZOOM_X, RBV_ZOOM_X + RBV_ZOOM_W, 0, 127);
+    raw = constrain(raw, 0, 127);
+    int value = (raw / RBV_ZOOM_STEP) * RBV_ZOOM_STEP;
+    if (value > 127) value = 127;
     rbvZoomDragging = true;
 
     if (value != rbvWaveZoom) {

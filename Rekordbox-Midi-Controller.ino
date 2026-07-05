@@ -72,7 +72,7 @@ struct AppIcon {
 AppIcon apps[] = {
   {"FX", 0xF800, EFFECTS},           // Red
   {"DECKS", 0x07E0, DECK_CONTROLS},  // Green
-  {"SEARCH", 0x001F, NEEDLE_SEARCH}, // Blue
+  {"SEARCH", 0x001F, NEEDLE_SEARCH}, // Blue - Song Search
   {"STEMS", 0x781F, STEMS},          // Purple
   {"VIEW", 0xFDA0, RB_VIEW},         // Orange
 };
@@ -115,20 +115,21 @@ class MIDICallbacks: public BLEServerCallbacks {
     }
 };
 
-void setBackLED(bool r, bool g, bool b) {
-  digitalWrite(LED_R_PIN, r ? LOW : HIGH);
-  digitalWrite(LED_G_PIN, g ? LOW : HIGH);
-  digitalWrite(LED_B_PIN, b ? LOW : HIGH);
+// Brightness 0-255 per channel. Active-LOW LED, so duty is inverted.
+void setBackLED(uint8_t r, uint8_t g, uint8_t b) {
+  ledcWrite(LED_R_PIN, 255 - r);
+  ledcWrite(LED_G_PIN, 255 - g);
+  ledcWrite(LED_B_PIN, 255 - b);
 }
 
 void setup() {
   Serial.begin(115200);
 
-  // RGB LED on the back of the board
-  pinMode(LED_R_PIN, OUTPUT);
-  pinMode(LED_G_PIN, OUTPUT);
-  pinMode(LED_B_PIN, OUTPUT);
-  setBackLED(false, false, false);
+  // RGB LED on the back of the board - PWM for brightness control
+  ledcAttach(LED_R_PIN, 5000, 8);
+  ledcAttach(LED_G_PIN, 5000, 8);
+  ledcAttach(LED_B_PIN, 5000, 8);
+  setBackLED(0, 0, 0);
 
   // Load saved dark/light preference before the first screen is drawn
   initThemeManager();
@@ -205,14 +206,14 @@ void loop() {
   if (bleJustConnected) {
     bleJustConnected = false;
     Serial.println("BLE connected");
-    setBackLED(false, false, true);
+    setBackLED(0, 0, (uint16_t)ledBrightness * 255 / 100);
     if (currentMode == MENU) drawMenu();
     updateStatus();
   }
   if (bleJustDisconnected) {
     bleJustDisconnected = false;
     Serial.println("BLE disconnected - restarting advertising");
-    setBackLED(false, false, false);
+    setBackLED(0, 0, 0);
     if (currentMode == MENU) drawMenu();
     updateStatus();
     delay(100);

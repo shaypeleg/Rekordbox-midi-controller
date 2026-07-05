@@ -34,10 +34,15 @@ extern uint16_t THEME_TEXT_DIM;
 // recognizable "connected" signal regardless of light/dark theme.
 #define BLUETOOTH_BLUE 0x2BDF
 
-// RGB LED on the back of the CYD board (active-LOW: LOW = on, HIGH = off)
+// RGB LED on the back of the CYD board (active-LOW, PWM-driven for brightness)
 #define LED_R_PIN 4
 #define LED_G_PIN 16
 #define LED_B_PIN 17
+#define LED_DEFAULT_BRIGHTNESS 15  // default percentage (0-100)
+#define LED_BRIGHTNESS_STEP     5  // +/- step in the Setup screen
+
+extern uint8_t ledBrightness;  // current brightness %, persisted in NVS
+void setBackLED(uint8_t r, uint8_t g, uint8_t b);
 
 // BLE MIDI UUIDs
 #define SERVICE_UUID        "03b80e5a-ede8-4b33-a751-6ce34ec4c700"
@@ -70,9 +75,15 @@ extern uint16_t THEME_TEXT_DIM;
 #define NOTE_FX_PADDLE_D1 36
 #define NOTE_FX_PADDLE_D2 37
 
-// Needle Search screen - CC, absolute value 0-127 (maps to "NeedleSearch")
+// Song Search screen - CC, absolute value 0-127 (maps to "NeedleSearch")
 #define CC_NEEDLE_D1 40
 #define CC_NEEDLE_D2 41
+
+// Song Search screen - Cue point navigation (Note On toggles)
+#define NOTE_CUE_PREV_D1 42
+#define NOTE_CUE_NEXT_D1 43
+#define NOTE_CUE_PREV_D2 44
+#define NOTE_CUE_NEXT_D2 45
 
 // Stems screen - Note On/Off toggles (Vocal, Melody, Bass, Drums) x2 decks.
 // Note values are unchanged from earlier revisions (only the on-screen

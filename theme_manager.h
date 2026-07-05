@@ -6,11 +6,13 @@
 
 #define THEME_NVS_NAMESPACE "theme"
 #define THEME_NVS_DARK_KEY  "dark"
+#define THEME_NVS_LED_KEY   "led_br"
 
 // Runtime theme state - THEME_* colors declared `extern` in
 // common_definitions.h so every screen file can use them unchanged; the
 // actual storage and palette values live here.
 bool darkMode = true;
+uint8_t ledBrightness = LED_DEFAULT_BRIGHTNESS;
 
 uint16_t THEME_BG;
 uint16_t THEME_SURFACE;
@@ -27,6 +29,7 @@ uint16_t THEME_TEXT_DIM;
 void initThemeManager();
 void applyTheme(bool dark);
 void toggleTheme();
+void saveLedBrightness();
 
 // Dark mode: dim DJ-booth palette, vivid neon accents pop against a near-
 // black background - the original/default look.
@@ -67,6 +70,7 @@ void initThemeManager() {
   Preferences prefs;
   prefs.begin(THEME_NVS_NAMESPACE, true);
   bool saved = prefs.getBool(THEME_NVS_DARK_KEY, true);
+  ledBrightness = prefs.getUChar(THEME_NVS_LED_KEY, LED_DEFAULT_BRIGHTNESS);
   prefs.end();
   applyTheme(saved);
 }
@@ -79,6 +83,13 @@ void toggleTheme() {
   Preferences prefs;
   prefs.begin(THEME_NVS_NAMESPACE, false);
   prefs.putBool(THEME_NVS_DARK_KEY, darkMode);
+  prefs.end();
+}
+
+void saveLedBrightness() {
+  Preferences prefs;
+  prefs.begin(THEME_NVS_NAMESPACE, false);
+  prefs.putUChar(THEME_NVS_LED_KEY, ledBrightness);
   prefs.end();
 }
 

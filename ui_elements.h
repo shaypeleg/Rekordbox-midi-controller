@@ -2,6 +2,7 @@
 #define UI_ELEMENTS_H
 
 #include "common_definitions.h"
+#include "icons.h"
 
 // Shared BACK button geometry - every mode screen exits via this same
 // button, so it's defined once here instead of as a repeated magic number
@@ -34,8 +35,8 @@ void drawHeader(String title);
 void drawToggleSlider(int x, int y, int w, int h, String label, uint16_t color, bool on);
 void drawBackChevron();
 void drawStatusIcons();
-void drawBluetoothGlyph(int cx, int cy, uint16_t color, bool filled);
-void drawWifiGlyph(int cx, int cyBottom, uint16_t color, bool filled);
+void drawBluetoothGlyph(int cx, int cy, uint16_t color);
+void drawWifiGlyph(int cx, int cy, uint16_t color);
 void exitToMenu();
 
 // UI implementations
@@ -78,7 +79,7 @@ void drawToggleButton(int x, int y, int w, int h, String text, uint16_t color, b
 
 // Text starts to the right of the back chevron's reserved zone instead of
 // being centered on the full screen width - a centered title silently
-// overlapped the chevron on longer titles ("DECK CONTROLS", "NEEDLE
+// overlapped the chevron on longer titles ("DECK CONTROLS", "SONG
 // SEARCH") since its left edge landed underneath the button.
 #define HEADER_TEXT_X (BACK_BTN_X + BACK_BTN_W + 6)
 
@@ -138,66 +139,36 @@ void drawBackChevron() {
   tft.drawLine(cx + 3, cy + 6, cx - 4, cy, THEME_TEXT);
 }
 
-// Bluetooth glyph: the classic rune (vertical spine + two triangles that
-// meet at the badge's center point) inside a rounded-square badge, matching
-// the familiar Bluetooth logo shape. `filled` true = solid brand-blue badge
-// with a contrasting rune (connected); false = hollow outline badge with
-// the rune drawn in the same outline color (not connected) - this is the
-// exact "no connection" look requested (plain outline glyph, no fill).
-void drawBluetoothGlyph(int cx, int cy, uint16_t color, bool filled) {
-  int halfW = 10, halfH = 12;
-
-  if (filled) {
-    tft.fillRoundRect(cx - halfW, cy - halfH, halfW * 2, halfH * 2, 7, color);
-  } else {
-    tft.drawRoundRect(cx - halfW, cy - halfH, halfW * 2, halfH * 2, 7, color);
-    tft.drawRoundRect(cx - halfW + 1, cy - halfH + 1, halfW * 2 - 2, halfH * 2 - 2, 6, color);
-  }
-
-  uint16_t runeColor = filled ? THEME_BG : color;
-  int h = halfH - 4;
-  int w = halfW - 4;
-  tft.drawLine(cx, cy - h, cx, cy + h, runeColor);          // spine
-  tft.drawLine(cx, cy - h, cx + w, cy - h / 2, runeColor);  // top -> upper point
-  tft.drawLine(cx + w, cy - h / 2, cx, cy, runeColor);      // upper point -> center
-  tft.drawLine(cx, cy, cx + w, cy + h / 2, runeColor);      // center -> lower point
-  tft.drawLine(cx + w, cy + h / 2, cx, cy + h, runeColor);  // lower point -> bottom
+// Bluetooth glyph drawn from XBM bitmap (icons.h). Thick-stroke
+// bind-rune, no surrounding badge. Color alone indicates state:
+// BLUETOOTH_BLUE = connected, THEME_TEXT_DIM = not connected.
+void drawBluetoothGlyph(int cx, int cy, uint16_t color) {
+  int bmpX = cx - BT_RUNE_W / 2;
+  int bmpY = cy - BT_RUNE_H / 2;
+  tft.fillRect(bmpX, bmpY, BT_RUNE_W, BT_RUNE_H, THEME_SURFACE);
+  tft.drawXBitmap(bmpX, bmpY, bt_rune_bits, BT_RUNE_W, BT_RUNE_H, color);
 }
 
-// WiFi glyph: three concentric quarter-rings fanning up from a dot, like
-// the familiar WiFi signal icon. `filled` true = thicker solid bands and a
-// filled dot (connected); false = thin hollow rings and a hollow dot (not
-// connected). Uses TFT_eSPI's drawArc (0deg = 6 o'clock, clockwise), so
-// 90->270 sweeps through 12 o'clock = the upper half only.
-void drawWifiGlyph(int cx, int cyBottom, uint16_t color, bool filled) {
-  if (filled) {
-    tft.fillCircle(cx, cyBottom, 2, color);
-  } else {
-    tft.drawCircle(cx, cyBottom, 2, color);
-  }
-
-  int outerRadii[3] = {4, 7, 10};
-  int thickness = filled ? 2 : 1;
-  for (int i = 0; i < 3; i++) {
-    int outer = outerRadii[i];
-    int inner = outer - thickness;
-    tft.drawArc(cx, cyBottom, outer, inner, 90, 270, color, THEME_SURFACE, true);
-  }
+// WiFi glyph drawn from XBM bitmap (icons.h). Three thick filled arc
+// bands fanning upward. Color indicates state: THEME_SUCCESS = connected,
+// THEME_WARNING = connecting, THEME_TEXT_DIM = not connected.
+void drawWifiGlyph(int cx, int cy, uint16_t color) {
+  int bmpX = cx - WIFI_ICON_W / 2;
+  int bmpY = cy - WIFI_ICON_H / 2;
+  tft.fillRect(bmpX, bmpY, WIFI_ICON_W, WIFI_ICON_H, THEME_SURFACE);
+  tft.drawXBitmap(bmpX, bmpY, wifi_icon_bits, WIFI_ICON_W, WIFI_ICON_H, color);
 }
 
-// Bluetooth / WiFi status badges, top-right of the main menu. Solid/filled
-// means connected; a hollow outline means not connected (WiFi also shows
-// an amber outline while a connection attempt is in progress). Bluetooth
-// always uses brand blue for "connected" so it reads at a glance, distinct
-// from WiFi's green.
+// Bluetooth / WiFi status icons, top-right of the main menu. Both icons
+// are vertically centered at the same Y so they read as a balanced pair.
+// Color encodes connection state; shape is always the same.
 void drawStatusIcons() {
-  int btX = 260, btY = 27;
-  int wifiX = 298, wifiY = 38;
+  int iconCY = 27;
 
-  drawBluetoothGlyph(btX, btY, deviceConnected ? BLUETOOTH_BLUE : THEME_TEXT_DIM, deviceConnected);
+  drawBluetoothGlyph(260, iconCY, deviceConnected ? BLUETOOTH_BLUE : THEME_TEXT_DIM);
 
   uint16_t wifiColor = wifiConnected ? THEME_SUCCESS : (wifiConnecting ? THEME_WARNING : THEME_TEXT_DIM);
-  drawWifiGlyph(wifiX, wifiY, wifiColor, wifiConnected);
+  drawWifiGlyph(295, iconCY, wifiColor);
 }
 
 void updateStatus() {

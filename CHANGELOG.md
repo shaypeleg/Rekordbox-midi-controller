@@ -4,6 +4,77 @@ All notable changes to this project are documented in this file.
 
 ## 2026-07-05
 
+### Added - LED brightness control on the Setup screen
+
+The Setup Home screen now has a scrollable layout with an LED section
+at the bottom. Tap the down-arrow to scroll and reveal `[-]` / `[+]`
+buttons that adjust the back LED brightness (0-100%, step 5%). The
+chosen value is saved to NVS and applied immediately when Bluetooth is
+connected. Default is 15%.
+
+### Changed - Needle Search screen renamed to Song Search
+
+Renamed the screen header from "NEEDLE SEARCH" to "SONG SEARCH" for clarity.
+
+### Added - Cue point navigation buttons on Song Search screen
+
+Added Previous Cue (`< CUE`) and Next Cue (`CUE >`) buttons for each deck on
+the Song Search screen. Buttons sit below each needle strip and send momentary
+Note On messages for mapping to Rekordbox's cue point navigation:
+
+- Deck 1: `NOTE_CUE_PREV_D1` (42), `NOTE_CUE_NEXT_D1` (43)
+- Deck 2: `NOTE_CUE_PREV_D2` (44), `NOTE_CUE_NEXT_D2` (45)
+
+Map each to the corresponding "Prev Cue" / "Next Cue" function in Rekordbox
+MIDI Learn. The needle strip height was reduced from 60px to 44px to
+accommodate the new buttons without exceeding the 240px display height.
+
+### Fixed - Wave Zoom sensitivity too high in RB View screen
+
+The Wave Zoom slider sent a new CC message for every pixel of finger
+movement (128 discrete values across the 280px strip), making the zoom
+level change too aggressively in Rekordbox. The output is now quantized
+to steps of 4 (`RBV_ZOOM_STEP`), yielding ~32 discrete zoom levels
+instead of 128. The slider still covers the full visual range but the
+MIDI values only update when the finger crosses a step boundary.
+
+### Fixed - Needle Search position jumps too fast
+
+The Needle Search strips sent a new CC on every single-pixel change,
+causing rapid position jumps in Rekordbox from minor finger movement or
+touchscreen jitter. Added a minimum change threshold (`NS_MIN_CHANGE = 3`)
+so a new MIDI message is only sent when the value has moved at least 3
+steps from the last sent position.
+
+### Changed - Back LED uses PWM for dimmer Bluetooth indicator
+
+Switched the RGB LED on the back of the CYD from `digitalWrite` (full
+on/off) to PWM via `ledcAttach`/`ledcWrite`. The Bluetooth-connected
+indicator now lights blue at ~16% brightness (`LED_DIM_BRIGHTNESS = 40`)
+instead of full blast. The constant lives in `common_definitions.h` for
+easy adjustment.
+
+### Changed - Bluetooth/WiFi status icons redesigned as XBM bitmaps
+
+Replaced the procedural line/arc drawing with pre-rendered XBM (monochrome
+bitmap) icons stored in PROGMEM (`icons.h`), matching the standard
+Bluetooth and WiFi logo shapes. Both icons are the same height (17px) so
+they look proportionally balanced side by side in the header.
+
+- **Bluetooth**: full bind-rune (ᚼ+ᛒ) with thick strokes, including the
+  left Hagall cross lines that were missing before. 13x17 pixel XBM drawn
+  standalone (removed the rounded-rect badge wrapper).
+- **WiFi**: three thick filled arc bands (42-138 deg) fanning upward from
+  a bottom point, matching the standard WiFi icon shape. 23x17 pixel XBM
+  with clear gaps between bands.
+- **Color-only state indication**: connected BT = blue (`BLUETOOTH_BLUE`),
+  connected WiFi = green (`THEME_SUCCESS`), connecting WiFi = amber
+  (`THEME_WARNING`), disconnected = dim gray (`THEME_TEXT_DIM`). Removed
+  the filled/outline badge distinction.
+- Both icons vertically centered at the same Y position for visual balance.
+- `generate_icons.py` included for regenerating the XBM arrays if icon
+  geometry needs to change.
+
 ### Added - Back RGB LED indicates Bluetooth connection status
 
 The RGB LED on the back of the CYD board now lights up blue when a Bluetooth
