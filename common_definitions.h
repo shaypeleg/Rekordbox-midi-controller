@@ -34,6 +34,11 @@ extern uint16_t THEME_TEXT_DIM;
 // recognizable "connected" signal regardless of light/dark theme.
 #define BLUETOOTH_BLUE 0x2BDF
 
+// RGB LED on the back of the CYD board (active-LOW: LOW = on, HIGH = off)
+#define LED_R_PIN 4
+#define LED_G_PIN 16
+#define LED_B_PIN 17
+
 // BLE MIDI UUIDs
 #define SERVICE_UUID        "03b80e5a-ede8-4b33-a751-6ce34ec4c700"
 #define CHARACTERISTIC_UUID "7772e5db-3868-4112-a1a9-f2669d106bf3"

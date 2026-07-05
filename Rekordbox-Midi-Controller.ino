@@ -115,8 +115,20 @@ class MIDICallbacks: public BLEServerCallbacks {
     }
 };
 
+void setBackLED(bool r, bool g, bool b) {
+  digitalWrite(LED_R_PIN, r ? LOW : HIGH);
+  digitalWrite(LED_G_PIN, g ? LOW : HIGH);
+  digitalWrite(LED_B_PIN, b ? LOW : HIGH);
+}
+
 void setup() {
   Serial.begin(115200);
+
+  // RGB LED on the back of the board
+  pinMode(LED_R_PIN, OUTPUT);
+  pinMode(LED_G_PIN, OUTPUT);
+  pinMode(LED_B_PIN, OUTPUT);
+  setBackLED(false, false, false);
 
   // Load saved dark/light preference before the first screen is drawn
   initThemeManager();
@@ -193,12 +205,14 @@ void loop() {
   if (bleJustConnected) {
     bleJustConnected = false;
     Serial.println("BLE connected");
+    setBackLED(false, false, true);
     if (currentMode == MENU) drawMenu();
     updateStatus();
   }
   if (bleJustDisconnected) {
     bleJustDisconnected = false;
     Serial.println("BLE disconnected - restarting advertising");
+    setBackLED(false, false, false);
     if (currentMode == MENU) drawMenu();
     updateStatus();
     delay(100);

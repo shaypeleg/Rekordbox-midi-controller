@@ -4,11 +4,38 @@ All notable changes to this project are documented in this file.
 
 ## 2026-07-05
 
-### Changed - Effects: single FX per deck, paddle flipped to up=ON
+### Added - Back RGB LED indicates Bluetooth connection status
 
-- **Single FX selection**: only one FX button can be armed or active per deck at
-  a time. Selecting a different FX automatically disarms/deactivates the previous
-  one (with MIDI sent if the paddle is active).
+The RGB LED on the back of the CYD board now lights up blue when a Bluetooth
+device is connected and turns off when disconnected. Provides an at-a-glance
+physical indicator of connection state without needing to look at the screen.
+
+- LED pins: GPIO 4 (R), GPIO 16 (G), GPIO 17 (B) — active-LOW.
+- `setBackLED()` helper added to main sketch for setting LED color.
+
+### Changed - Effects: larger FX buttons, smaller paddle, orange active state
+
+- FX buttons enlarged from 44x28 to 46x36 for easier finger tapping.
+- Paddle shrunk from 100x120 to 86x100 to free space for the larger buttons.
+- Paddle fills solid orange (0xFDA0) when active, with contrasting text so the
+  ON state is immediately obvious.
+
+### Fixed - Effects: multiple FX not activating when paddle turned on
+
+When the paddle activated 2 or 3 armed FX simultaneously, the back-to-back
+`setValue()`/`notify()` calls on the BLE characteristic were so fast that the
+second write overwrote the first before it was transmitted. Rekordbox only
+received one (or zero) of the messages. Added a 20ms delay between consecutive
+MIDI sends in the paddle ON and paddle OFF loops so each note is delivered as a
+separate BLE packet.
+
+### Changed - Effects: multi-FX stacking per deck, paddle flipped to up=ON
+
+- **Multi-FX stacking**: all three FX buttons (FX1, FX2, FX3) can be armed and
+  activated independently on the same deck. Arm any combination while the paddle
+  is off, then push the paddle to activate them all at once. Each FX toggles
+  independently — turning one off while the paddle is active doesn't affect the
+  others.
 - **Paddle orientation flipped**: the knob now sits at the top when ON and at the
   bottom when OFF, matching the physical "push up to engage" feel.
 

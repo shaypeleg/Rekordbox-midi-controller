@@ -9,14 +9,17 @@
 #define FX_COL_L_X 5
 #define FX_COL_R_X 165
 #define FX_COL_W 150
-#define FX_BTN_W 44
-#define FX_BTN_H 28
-#define FX_BTN_GAP 6
+#define FX_BTN_W 46
+#define FX_BTN_H 36
+#define FX_BTN_GAP 5
 #define FX_BTN_Y (CONTENT_Y + 24)
-#define FX_PADDLE_Y (FX_BTN_Y + FX_BTN_H + 14)
-#define FX_PADDLE_W 100
-#define FX_PADDLE_H 120
-#define FX_PADDLE_KNOB_H 40
+#define FX_PADDLE_Y (FX_BTN_Y + FX_BTN_H + 12)
+#define FX_PADDLE_W 86
+#define FX_PADDLE_H 100
+#define FX_PADDLE_KNOB_H 34
+
+// Paddle border turns orange when active
+#define FX_PADDLE_ACTIVE_COLOR 0xFDA0
 
 // Flash interval for active FX buttons (milliseconds)
 #define FX_FLASH_INTERVAL 300
@@ -117,14 +120,15 @@ void drawFxDeckColumn(int colX, int deck) {
 }
 
 void drawFxPaddle(int x, bool down) {
-  uint16_t borderColor = THEME_PRIMARY;
+  uint16_t borderColor = down ? FX_PADDLE_ACTIVE_COLOR : THEME_PRIMARY;
 
   tft.fillRoundRect(x, FX_PADDLE_Y, FX_PADDLE_W, FX_PADDLE_H, 10,
-                    THEME_SURFACE);
+                    down ? FX_PADDLE_ACTIVE_COLOR : THEME_SURFACE);
   tft.drawRoundRect(x, FX_PADDLE_Y, FX_PADDLE_W, FX_PADDLE_H, 10,
                     borderColor);
 
-  tft.setTextColor(THEME_TEXT_DIM, THEME_SURFACE);
+  uint16_t bgFill = down ? FX_PADDLE_ACTIVE_COLOR : THEME_SURFACE;
+  tft.setTextColor(down ? THEME_BG : THEME_TEXT_DIM, bgFill);
   tft.drawCentreString("ON", x + FX_PADDLE_W / 2, FX_PADDLE_Y + 8, 1);
   tft.drawCentreString("OFF", x + FX_PADDLE_W / 2,
                        FX_PADDLE_Y + FX_PADDLE_H - 18, 1);
@@ -187,14 +191,6 @@ void handleEffectsMode() {
             sendToggleNote(notes[i]);
             Serial.printf("Deck %d FX%d: active → disarmed (MIDI off)\n", deck + 1, i + 1);
           } else {
-            // Deactivate the currently active FX first (only one allowed)
-            for (int j = 0; j < 3; j++) {
-              if (j != i && state[j] == FX_ACTIVE) {
-                state[j] = FX_DISARMED;
-                sendToggleNote(notes[j]);
-                Serial.printf("Deck %d FX%d: active → disarmed (replaced)\n", deck + 1, j + 1);
-              }
-            }
             state[i] = FX_ACTIVE;
             sendToggleNote(notes[i]);
             Serial.printf("Deck %d FX%d: → active (MIDI on)\n", deck + 1, i + 1);
@@ -204,13 +200,6 @@ void handleEffectsMode() {
             state[i] = FX_DISARMED;
             Serial.printf("Deck %d FX%d: armed → disarmed\n", deck + 1, i + 1);
           } else {
-            // Disarm the currently armed FX first (only one allowed)
-            for (int j = 0; j < 3; j++) {
-              if (j != i && state[j] == FX_ARMED) {
-                state[j] = FX_DISARMED;
-                Serial.printf("Deck %d FX%d: armed → disarmed (replaced)\n", deck + 1, j + 1);
-              }
-            }
             state[i] = FX_ARMED;
             Serial.printf("Deck %d FX%d: → armed\n", deck + 1, i + 1);
           }
@@ -226,9 +215,14 @@ void handleEffectsMode() {
       *paddleDown = !(*paddleDown);
 
       if (*paddleDown) {
-        // Paddle ON: all armed FX → active, send MIDI for each
+        // Paddle ON: all armed FX → active, send MIDI for each.
+        // BLE needs a gap between consecutive notify() calls so the
+        // receiver sees each message as a separate packet.
+        bool first = true;
         for (int i = 0; i < 3; i++) {
           if (state[i] == FX_ARMED) {
+            if (!first) delay(20);
+            first = false;
             state[i] = FX_ACTIVE;
             sendToggleNote(notes[i]);
             Serial.printf("Deck %d FX%d: armed → active (paddle ON)\n", deck + 1, i + 1);
@@ -238,8 +232,11 @@ void handleEffectsMode() {
         fxLastFlashMs = millis();
       } else {
         // Paddle OFF: all active FX → armed, send MIDI for each
+        bool first = true;
         for (int i = 0; i < 3; i++) {
           if (state[i] == FX_ACTIVE) {
+            if (!first) delay(20);
+            first = false;
             state[i] = FX_ARMED;
             sendToggleNote(notes[i]);
             Serial.printf("Deck %d FX%d: active → armed (paddle OFF)\n", deck + 1, i + 1);
