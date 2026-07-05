@@ -10,6 +10,18 @@ Reordered the main menu icon grid to: FX, Decks, Hot Cue, Search, Stems,
 View. Hot Cue moved from position 6 to position 3, pushing Search, Stems,
 and View one slot to the right.
 
+### Changed - Hot Cue buttons are now gated (press-and-hold like REV5 pads)
+
+Hot cue buttons now send Note On (`0x90`) when pressed and Note Off (`0x80`)
+when released, matching the gated behavior of the DDJ-REV5's hot cue pads.
+Previously they sent only Note On (via `sendToggleNote`), which caused
+Rekordbox to start playback but left the play state out of sync — the play
+button on the REV5 wasn't solid and needed two presses to regain control.
+
+- Button stays visually inverted (hollow with colored border) while held.
+- Releasing the finger restores the filled button and sends Note Off.
+- Navigating back while a button is held sends Note Off before exiting.
+
 ### Added - Second mode-entry signal on Hot Cue screen for Rekordbox view switch
 
 Entering the Hot Cue screen now sends two MIDI notes back-to-back (20ms gap):

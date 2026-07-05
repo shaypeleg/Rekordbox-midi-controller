@@ -37,14 +37,20 @@ static const uint16_t hotCueColors[8] = {
   0x07FF, 0x001F, 0x781F, 0xF81F
 };
 
+// Track which hot cue is currently held (gated). -1 = none.
+// Only one button can be held at a time on a resistive touchscreen.
+int heldHotCueDeck = -1;
+int heldHotCueIndex = -1;
+
 void initializeHotCueMode();
 void drawHotCueMode();
 void handleHotCueMode();
 void drawHotCueDeck(int deck);
-void handleHotCueDeck(int deck);
+void drawHotCueButton(int deck, int cue, bool pressed);
 
 void initializeHotCueMode() {
-  // Stateless — hot cues are momentary triggers, no local toggle state.
+  heldHotCueDeck = -1;
+  heldHotCueIndex = -1;
 }
 
 int hotCueLabelY(int deck) { return (deck == 0) ? HC_D1_LABEL_Y : HC_D2_LABEL_Y; }
@@ -56,7 +62,7 @@ void drawHotCueMode() {
   drawHeader("HOT CUE");
 
   sendToggleNote(NOTE_HOTCUE_MODE_ENTER);
-  delay(20);
+  delay(100);
   sendToggleNote(NOTE_HOTCUE_VIEW_SWITCH);
   Serial.println("Hot Cue mode entered - sent mode + view signals");
 
@@ -75,70 +81,85 @@ void drawHotCueDeck(int deck) {
                  HC_START_X, labelY, 2);
 
   for (int i = 0; i < 8; i++) {
-    int col = i % 4;
-    int rowY = (i < 4) ? row1Y : row2Y;
-    int x = HC_START_X + col * (HC_BTN_W + HC_BTN_GAP);
-
-    tft.fillRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, hotCueColors[i]);
-    tft.drawRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, THEME_TEXT);
-
-    tft.setTextColor(THEME_BG, hotCueColors[i]);
-    tft.drawCentreString(String(i + 1), x + HC_BTN_W / 2,
-                         rowY + HC_BTN_H / 2 - 8, 2);
+    drawHotCueButton(deck, i, false);
   }
 }
 
-// Brief visual flash on tap to give tactile feedback.
-void flashHotCueButton(int deck, int cue) {
+// Draw a single hot cue button. `pressed` inverts the colors to show
+// the button is currently held down (gated).
+void drawHotCueButton(int deck, int cue, bool pressed) {
   int col = cue % 4;
   int rowY = (cue < 4) ? hotCueRow1Y(deck) : hotCueRow2Y(deck);
   int x = HC_START_X + col * (HC_BTN_W + HC_BTN_GAP);
 
-  tft.fillRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, THEME_BG);
-  tft.drawRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, hotCueColors[cue]);
-  tft.setTextColor(hotCueColors[cue], THEME_BG);
-  tft.drawCentreString(String(cue + 1), x + HC_BTN_W / 2,
-                       rowY + HC_BTN_H / 2 - 8, 2);
+  uint16_t bg = pressed ? THEME_BG : hotCueColors[cue];
+  uint16_t border = pressed ? hotCueColors[cue] : THEME_TEXT;
+  uint16_t textC = pressed ? hotCueColors[cue] : THEME_BG;
 
-  delay(80);
-
-  tft.fillRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, hotCueColors[cue]);
-  tft.drawRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, THEME_TEXT);
-  tft.setTextColor(THEME_BG, hotCueColors[cue]);
+  tft.fillRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, bg);
+  tft.drawRoundRect(x, rowY, HC_BTN_W, HC_BTN_H, 6, border);
+  tft.setTextColor(textC, bg);
   tft.drawCentreString(String(cue + 1), x + HC_BTN_W / 2,
                        rowY + HC_BTN_H / 2 - 8, 2);
 }
 
-void handleHotCueDeck(int deck) {
-  const byte *notes = (deck == 0) ? hotCueD1Notes : hotCueD2Notes;
-  int row1Y = hotCueRow1Y(deck);
-  int row2Y = hotCueRow2Y(deck);
-
-  for (int i = 0; i < 8; i++) {
-    int col = i % 4;
-    int rowY = (i < 4) ? row1Y : row2Y;
-    int x = HC_START_X + col * (HC_BTN_W + HC_BTN_GAP);
-
-    if (isButtonPressed(x, rowY, HC_BTN_W, HC_BTN_H)) {
-      sendToggleNote(notes[i]);
-      flashHotCueButton(deck, i);
-      Serial.printf("Deck %d Hot Cue %d triggered\n", deck + 1, i + 1);
-      return;
+// Finds which hot cue button (if any) is under the current touch point.
+// Returns the cue index (0-7) or -1 if none. Sets `outDeck` to 0 or 1.
+int findHotCueAtTouch(int &outDeck) {
+  for (int deck = 0; deck < 2; deck++) {
+    int row1Y = hotCueRow1Y(deck);
+    int row2Y = hotCueRow2Y(deck);
+    for (int i = 0; i < 8; i++) {
+      int col = i % 4;
+      int rowY = (i < 4) ? row1Y : row2Y;
+      int x = HC_START_X + col * (HC_BTN_W + HC_BTN_GAP);
+      if (isButtonPressed(x, rowY, HC_BTN_W, HC_BTN_H)) {
+        outDeck = deck;
+        return i;
+      }
     }
   }
+  return -1;
 }
 
 void handleHotCueMode() {
+  // Back button — only on initial press
   if (touch.justPressed &&
       isButtonPressed(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H)) {
+    if (heldHotCueIndex >= 0) {
+      const byte *notes = (heldHotCueDeck == 0) ? hotCueD1Notes : hotCueD2Notes;
+      sendMIDI(0x90, notes[heldHotCueIndex], 0);
+      drawHotCueButton(heldHotCueDeck, heldHotCueIndex, false);
+      heldHotCueDeck = -1;
+      heldHotCueIndex = -1;
+    }
     exitToMenu();
     return;
   }
 
-  if (!touch.justPressed) return;
+  // Press — Note On, velocity 127
+  if (touch.justPressed) {
+    int deck;
+    int cue = findHotCueAtTouch(deck);
+    if (cue >= 0) {
+      const byte *notes = (deck == 0) ? hotCueD1Notes : hotCueD2Notes;
+      sendMIDI(0x90, notes[cue], 127);
+      drawHotCueButton(deck, cue, true);
+      heldHotCueDeck = deck;
+      heldHotCueIndex = cue;
+      Serial.printf("Deck %d Hot Cue %d ON\n", deck + 1, cue + 1);
+    }
+  }
 
-  handleHotCueDeck(0);
-  handleHotCueDeck(1);
+  // Release — Note On, velocity 0 (same as REV5 behavior)
+  if (touch.justReleased && heldHotCueIndex >= 0) {
+    const byte *notes = (heldHotCueDeck == 0) ? hotCueD1Notes : hotCueD2Notes;
+    sendMIDI(0x90, notes[heldHotCueIndex], 0);
+    drawHotCueButton(heldHotCueDeck, heldHotCueIndex, false);
+    Serial.printf("Deck %d Hot Cue %d OFF\n", heldHotCueDeck + 1, heldHotCueIndex + 1);
+    heldHotCueDeck = -1;
+    heldHotCueIndex = -1;
+  }
 }
 
 #endif
