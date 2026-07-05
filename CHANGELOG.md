@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## 2026-07-05
 
+### Changed - Main menu icon order
+
+Reordered the main menu icon grid to: FX, Decks, Hot Cue, Search, Stems,
+View. Hot Cue moved from position 6 to position 3, pushing Search, Stems,
+and View one slot to the right.
+
+### Added - Hot Cue screen (8 pads per deck + mode-entry MIDI signal)
+
+New "HOTCUE" screen accessible from the main menu (magenta icon) with 8
+hot cue trigger pads per deck, laid out as two rows of 4:
+
+- **16 hot cue buttons** (8 per deck) colored to match Rekordbox's default
+  pad colors (red, orange, yellow, green, cyan, blue, purple, pink).
+- Each button sends a momentary Note On:
+  - Deck 1: `NOTE_HOTCUE_D1_1`..`NOTE_HOTCUE_D1_8` (70-77)
+  - Deck 2: `NOTE_HOTCUE_D2_1`..`NOTE_HOTCUE_D2_8` (78-85)
+  Map each to the corresponding Hot Cue 1-8 in Rekordbox MIDI Learn.
+- **Mode-entry signal**: entering the Hot Cue screen sends
+  `NOTE_HOTCUE_MODE_ENTER` (86) so Rekordbox can be mapped to switch to
+  Hot Cue performance pad mode automatically.
+- Visual tap feedback: buttons briefly flash inverted on press.
+- Menu icon grid resized from 52px/10px to 44px/8px icons to fit the 6th
+  function button on the 320px display.
+
 ### Added - LED brightness control on the Setup screen
 
 The Setup Home screen now has a scrollable layout with an LED section

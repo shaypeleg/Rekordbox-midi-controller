@@ -16,6 +16,7 @@
 #include "needle_search_mode.h"
 #include "stems_mode.h"
 #include "rb_view_mode.h"
+#include "hot_cue_mode.h"
 #include "setup_mode.h"
 #include "ui_elements.h"
 #include "midi_utils.h"
@@ -72,12 +73,13 @@ struct AppIcon {
 AppIcon apps[] = {
   {"FX", 0xF800, EFFECTS},           // Red
   {"DECKS", 0x07E0, DECK_CONTROLS},  // Green
+  {"HOTCUE", 0xF81F, HOT_CUE},      // Magenta
   {"SEARCH", 0x001F, NEEDLE_SEARCH}, // Blue - Song Search
   {"STEMS", 0x781F, STEMS},          // Purple
   {"VIEW", 0xFDA0, RB_VIEW},         // Orange
 };
 
-int numApps = 5;
+int numApps = 6;
 
 // Small settings shortcut, bottom-right of the menu. Sized smaller than the
 // main function icons (it's a secondary, infrequent action) but still a
@@ -89,8 +91,8 @@ int numApps = 5;
 // Function grid geometry - shared by drawMenu() and handleMenuTouch() so
 // the tap targets can never drift out of sync with what's drawn.
 #define MENU_HEADER_H 54
-#define MENU_ICON_SIZE 52
-#define MENU_ICON_SPACING 10
+#define MENU_ICON_SIZE 44
+#define MENU_ICON_SPACING 8
 #define MENU_GRID_W (numApps * MENU_ICON_SIZE + (numApps - 1) * MENU_ICON_SPACING)
 #define MENU_GRID_X ((320 - MENU_GRID_W) / 2)
 #define MENU_GRID_BLOCK_H (MENU_ICON_SIZE + 5 + 10)
@@ -161,7 +163,7 @@ void setup() {
   pCharacteristic = service->createCharacteristic(
     BLEUUID(CHARACTERISTIC_UUID),
     NIMBLE_PROPERTY::READ |
-    NIMBLE_PROPERTY::WRITE |
+    NIMBLE_PROPERTY::WRITE_NR |
     NIMBLE_PROPERTY::NOTIFY
   );
   // NimBLE automatically creates the 0x2902 (CCCD) descriptor for
@@ -193,6 +195,7 @@ void setup() {
   initializeNeedleSearchMode();
   initializeStemsMode();
   initializeRbViewMode();
+  initializeHotCueMode();
   initializeSetupMode();
   
   drawMenu();
@@ -259,6 +262,9 @@ void loop() {
       break;
     case RB_VIEW:
       handleRbViewMode();
+      break;
+    case HOT_CUE:
+      handleHotCueMode();
       break;
     case SETUP:
       handleSetupMode();
@@ -392,6 +398,17 @@ void drawAppGraphics(AppMode mode, int x, int y, int iconSize) {
         tft.drawFastHLine(centerX - 4, centerY + 10, 8, THEME_BG);
       }
       break;
+    case HOT_CUE: // 2x2 mini pads
+      {
+        int padS = 7;
+        int padG = 3;
+        int ox = centerX - padS - padG / 2;
+        int oy = centerY - padS - padG / 2;
+        for (int r = 0; r < 2; r++)
+          for (int c = 0; c < 2; c++)
+            tft.fillRect(ox + c * (padS + padG), oy + r * (padS + padG), padS, padS, THEME_BG);
+      }
+      break;
     default:
       break; // SETUP has its own gear badge (drawMenuGearButton) - not part of this grid
   }
@@ -430,6 +447,9 @@ void enterMode(AppMode mode) {
       break;
     case RB_VIEW:
       drawRbViewMode();
+      break;
+    case HOT_CUE:
+      drawHotCueMode();
       break;
     case SETUP:
       initializeSetupMode(); // always return to Setup Home

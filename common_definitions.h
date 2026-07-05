@@ -111,6 +111,29 @@ void setBackLED(uint8_t r, uint8_t g, uint8_t b);
 // Wave Zoom - CC, absolute value 0-127 (maps to "WaveZoom" in Rekordbox)
 #define CC_RBV_WAVE_ZOOM       65
 
+// Hot Cue screen - Note On/Off, 8 hot cues per deck.
+// Map each to the corresponding Hot Cue 1-8 in Rekordbox MIDI Learn.
+#define NOTE_HOTCUE_D1_1  70
+#define NOTE_HOTCUE_D1_2  71
+#define NOTE_HOTCUE_D1_3  72
+#define NOTE_HOTCUE_D1_4  73
+#define NOTE_HOTCUE_D1_5  74
+#define NOTE_HOTCUE_D1_6  75
+#define NOTE_HOTCUE_D1_7  76
+#define NOTE_HOTCUE_D1_8  77
+#define NOTE_HOTCUE_D2_1  78
+#define NOTE_HOTCUE_D2_2  79
+#define NOTE_HOTCUE_D2_3  80
+#define NOTE_HOTCUE_D2_4  81
+#define NOTE_HOTCUE_D2_5  82
+#define NOTE_HOTCUE_D2_6  83
+#define NOTE_HOTCUE_D2_7  84
+#define NOTE_HOTCUE_D2_8  85
+
+// Sent once when entering the Hot Cue screen so Rekordbox can switch
+// to Hot Cue performance pad mode via MIDI Learn.
+#define NOTE_HOTCUE_MODE_ENTER 86
+
 // Touch handling
 struct TouchState {
   bool wasPressed = false;
@@ -128,6 +151,7 @@ enum AppMode {
   NEEDLE_SEARCH,
   STEMS,
   RB_VIEW,
+  HOT_CUE,
   SETUP
 };
 
