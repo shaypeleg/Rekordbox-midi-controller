@@ -17,6 +17,8 @@ Every screen (except the main menu) can be exited via the small chevron (`‹`) 
 - **DECKS (Deck Controls)** - Master Tempo, Quantize, and Slip Mode toggles for Deck 1 and Deck 2.
 - **SEARCH (Needle Search)** - two touch strips (one per deck) - drag across a strip to jump to that position in the track.
 - **STEMS** - Vocal / Melody / Bass / Drums stem toggles for Deck 1 and Deck 2, plus a small **SOLO** toggle per deck: off, tapping a stem just adds/removes it; on, tapping a stem isolates it (mutes the other three), and tapping the isolated stem again restores all four.
+- **VIEW (RB View)** - toggle Rekordbox UI panels (FX, Sampler, Mixer, Record) on/off, plus a horizontal Wave Zoom slider (CC 0-127).
+- **HOTCUE (Hot Cue)** - 8 hot cue trigger pads per deck (2 rows of 4), color-coded to match Rekordbox's default pad colors. Buttons are momentary triggers (not toggles). Entering this screen sends two MIDI signals so you can map Rekordbox to auto-switch to Hot Cue pad mode and/or change the screen view.
 - **SETUP** - Bluetooth status + restart advertising, WiFi scan/connect with an on-screen keyboard for entering the password (credentials saved on-device and reconnected automatically on boot), and a **DARK/LIGHT** display toggle (saved on-device, applies instantly to every screen).
 
 ## Mapping controls in Rekordbox
@@ -40,6 +42,16 @@ This device is a **generic BLE MIDI controller** - it doesn't ship with a Rekord
 | Needle Search | Deck 2 strip | CC 41 (0-127) | Deck 2 `NeedleSearch` |
 | Stems | Deck 1 Vocal / Melody / Bass / Drums | Notes 50, 53, 52, 51 | Deck 1 stem mute/isolate functions |
 | Stems | Deck 2 Vocal / Melody / Bass / Drums | Notes 54, 57, 56, 55 | Deck 2 stem mute/isolate functions |
+| Stems | SOLO toggle | Note 58 | `StemsMode` (Mute/Solo switch) |
+| RB View | FX Panel | Note 60 | FX Panel On/Off |
+| RB View | Sampler Panel | Note 61 | Sampler Panel On/Off |
+| RB View | Mixer Panel | Note 62 | Mixer Panel On/Off |
+| RB View | Record Panel | Note 63 | Record Panel On/Off |
+| RB View | Wave Zoom | CC 65 (0-127) | `WaveZoom` |
+| Hot Cue | Deck 1 Hot Cue 1-8 | Notes 70-77 | Deck 1 `HotCue 1`-`HotCue 8` |
+| Hot Cue | Deck 2 Hot Cue 1-8 | Notes 78-85 | Deck 2 `HotCue 1`-`HotCue 8` |
+| Hot Cue | Mode enter (on screen open) | Note 86 | Hot Cue pad mode switch |
+| Hot Cue | View switch (on screen open) | Note 87 | Screen view switch |
 
 ### About the FX knob direction
 

@@ -132,7 +132,10 @@ void setBackLED(uint8_t r, uint8_t g, uint8_t b);
 
 // Sent once when entering the Hot Cue screen so Rekordbox can switch
 // to Hot Cue performance pad mode via MIDI Learn.
-#define NOTE_HOTCUE_MODE_ENTER 86
+#define NOTE_HOTCUE_MODE_ENTER   86
+// Second mode-entry signal for mapping a separate Rekordbox action
+// (e.g. switching screen view) when the Hot Cue screen opens.
+#define NOTE_HOTCUE_VIEW_SWITCH  87
 
 // Touch handling
 struct TouchState {

@@ -56,7 +56,9 @@ void drawHotCueMode() {
   drawHeader("HOT CUE");
 
   sendToggleNote(NOTE_HOTCUE_MODE_ENTER);
-  Serial.println("Hot Cue mode entered - sent mode signal");
+  delay(20);
+  sendToggleNote(NOTE_HOTCUE_VIEW_SWITCH);
+  Serial.println("Hot Cue mode entered - sent mode + view signals");
 
   drawHotCueDeck(0);
   drawHotCueDeck(1);

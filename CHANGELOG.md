@@ -10,6 +10,14 @@ Reordered the main menu icon grid to: FX, Decks, Hot Cue, Search, Stems,
 View. Hot Cue moved from position 6 to position 3, pushing Search, Stems,
 and View one slot to the right.
 
+### Added - Second mode-entry signal on Hot Cue screen for Rekordbox view switch
+
+Entering the Hot Cue screen now sends two MIDI notes back-to-back (20ms gap):
+1. `NOTE_HOTCUE_MODE_ENTER` (86) — for switching to Hot Cue pad mode.
+2. `NOTE_HOTCUE_VIEW_SWITCH` (87) — for switching screen view in Rekordbox.
+
+Map each to a separate function in Rekordbox MIDI Learn.
+
 ### Added - Hot Cue screen (8 pads per deck + mode-entry MIDI signal)
 
 New "HOTCUE" screen accessible from the main menu (magenta icon) with 8
