@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file.
 
 ## 2026-07-05
 
+### Changed - Effects: single FX per deck, paddle flipped to up=ON
+
+- **Single FX selection**: only one FX button can be armed or active per deck at
+  a time. Selecting a different FX automatically disarms/deactivates the previous
+  one (with MIDI sent if the paddle is active).
+- **Paddle orientation flipped**: the knob now sits at the top when ON and at the
+  bottom when OFF, matching the physical "push up to engage" feel.
+
+### Changed - Effects screen: arm/activate FX model with paddle gating
+
+Replaced the direct-toggle FX buttons and independent paddle MIDI note with a
+three-state arm/activate model where the paddle gates when MIDI is actually sent:
+
+- **Disarmed** (hollow): FX slot not selected.
+- **Armed** (solid blue): FX slot selected, but paddle is OFF — no MIDI sent yet.
+- **Active** (solid blue + flashing): FX slot armed AND paddle is ON — MIDI Note
+  On was sent to Rekordbox when the paddle activated.
+
+Behavior:
+- Tapping an FX button when paddle is OFF toggles between Disarmed ↔ Armed (UI
+  only, no MIDI).
+- Pushing the paddle ON sends MIDI Note On for every armed FX (armed → active).
+- Pushing the paddle OFF sends MIDI Note On for every active FX to turn them off
+  in Rekordbox (active → armed). Disarmed buttons are unaffected.
+- While paddle is ON, tapping an active FX disarms it and sends MIDI to turn it
+  off; tapping a disarmed FX activates it immediately and sends MIDI to turn it on.
+- Active FX buttons flash (~300ms interval) so the live state is visually distinct
+  from merely armed.
+- The paddle itself no longer sends its own dedicated MIDI note
+  (`NOTE_FX_PADDLE_D1`/`NOTE_FX_PADDLE_D2` are unused now). Only the per-slot
+  FX notes (30-35) are sent, gated by the paddle state.
+
 ### Added - Rekordbox View screen (panel toggles + wave zoom)
 
 New "RB VIEW" screen accessible from the main menu (orange icon) for toggling
