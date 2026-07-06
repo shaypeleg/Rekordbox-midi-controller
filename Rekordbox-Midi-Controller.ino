@@ -17,6 +17,7 @@
 #include "stems_mode.h"
 #include "rb_view_mode.h"
 #include "hot_cue_mode.h"
+#include "track_info_mode.h"
 #include "setup_mode.h"
 #include "ui_elements.h"
 #include "midi_utils.h"
@@ -71,15 +72,18 @@ struct AppIcon {
 // icon in the corner of the menu instead of a full-size function button.
 #define MAX_APPS 12
 AppIcon apps[] = {
-  {"FX", 0xF800, EFFECTS},           // Red
-  {"DECKS", 0x07E0, DECK_CONTROLS},  // Green
-  {"HOTCUE", 0xF81F, HOT_CUE},      // Magenta
-  {"SEARCH", 0x001F, NEEDLE_SEARCH}, // Blue - Song Search
-  {"STEMS", 0x781F, STEMS},          // Purple
-  {"VIEW", 0xFDA0, RB_VIEW},         // Orange
+  // Row 1
+  {"FX", 0xF800, EFFECTS},            // Red
+  {"DECKS", 0x07E0, DECK_CONTROLS},   // Green
+  {"HOTCUE", 0xF81F, HOT_CUE},        // Magenta
+  {"STEMS", 0x781F, STEMS},            // Purple
+  // Row 2
+  {"TRACK", 0x07FF, TRACK_INFO},       // Cyan - Now Playing
+  {"SCROLL", 0x001F, NEEDLE_SEARCH},   // Blue - Waveform Scroll
+  {"VIEWS", 0xFDA0, RB_VIEW},          // Orange
 };
 
-int numApps = 6;
+int numApps = 7;
 
 // Small settings shortcut, bottom-right of the menu. Sized smaller than the
 // main function icons (it's a secondary, infrequent action) but still a
@@ -93,10 +97,27 @@ int numApps = 6;
 #define MENU_HEADER_H 54
 #define MENU_ICON_SIZE 44
 #define MENU_ICON_SPACING 8
-#define MENU_GRID_W (numApps * MENU_ICON_SIZE + (numApps - 1) * MENU_ICON_SPACING)
-#define MENU_GRID_X ((320 - MENU_GRID_W) / 2)
+#define MENU_COLS 4
+#define MENU_ROW_SPACING 22
 #define MENU_GRID_BLOCK_H (MENU_ICON_SIZE + 5 + 10)
-#define MENU_GRID_Y (MENU_HEADER_H + ((MENU_GEAR_Y - 8) - MENU_HEADER_H - MENU_GRID_BLOCK_H) / 2)
+#define MENU_GRID_Y (MENU_HEADER_H + 10)
+
+// Returns the x-position for a given app index, centering each row within
+// the 320px screen width so partial rows (e.g. 3 of 4 columns) are centred.
+int menuItemX(int idx) {
+  int row = idx / MENU_COLS;
+  int col = idx % MENU_COLS;
+  int rowStart = row * MENU_COLS;
+  int itemsInRow = min(numApps - rowStart, MENU_COLS);
+  int rowW = itemsInRow * MENU_ICON_SIZE + (itemsInRow - 1) * MENU_ICON_SPACING;
+  int rowX = (320 - rowW) / 2;
+  return rowX + col * (MENU_ICON_SIZE + MENU_ICON_SPACING);
+}
+
+int menuItemY(int idx) {
+  int row = idx / MENU_COLS;
+  return MENU_GRID_Y + row * (MENU_GRID_BLOCK_H + MENU_ROW_SPACING);
+}
 
 // BLE callbacks run in the NimBLE host task - NOT the Arduino loop.
 // Touching SPI (TFT), calling notify(), or anything that takes a FreeRTOS
@@ -196,6 +217,7 @@ void setup() {
   initializeStemsMode();
   initializeRbViewMode();
   initializeHotCueMode();
+  initializeTrackInfoMode();
   initializeSetupMode();
   
   drawMenu();
@@ -266,6 +288,9 @@ void loop() {
     case HOT_CUE:
       handleHotCueMode();
       break;
+    case TRACK_INFO:
+      handleTrackInfoMode();
+      break;
     case SETUP:
       handleSetupMode();
       break;
@@ -290,12 +315,10 @@ void drawMenu() {
   // Bluetooth/WiFi status icons
   drawStatusIcons();
   
-  // Grid layout, centered in the space between the header and the gear
-  // icon. Only the four controller functions live here now - Setup moved
-  // to its own icon since it configures the device, not Rekordbox.
+  // Grid layout with wrapping rows (MENU_COLS per row), centered per row
   for (int i = 0; i < numApps; i++) {
-    int x = MENU_GRID_X + i * (MENU_ICON_SIZE + MENU_ICON_SPACING);
-    int y = MENU_GRID_Y;
+    int x = menuItemX(i);
+    int y = menuItemY(i);
     
     uint16_t iconColor = apps[i].color;
     
@@ -409,6 +432,17 @@ void drawAppGraphics(AppMode mode, int x, int y, int iconSize) {
             tft.fillRect(ox + c * (padS + padG), oy + r * (padS + padG), padS, padS, THEME_BG);
       }
       break;
+    case TRACK_INFO: // waveform with note
+      {
+        tft.drawFastHLine(centerX - 12, centerY, 24, THEME_BG);
+        for (int i = 0; i < 5; i++) {
+          int bh = 3 + (i % 3) * 3;
+          tft.drawFastVLine(centerX - 10 + i * 5, centerY - bh, bh * 2, THEME_BG);
+        }
+        tft.fillCircle(centerX + 8, centerY + 6, 3, THEME_BG);
+        tft.drawFastVLine(centerX + 11, centerY - 6, 12, THEME_BG);
+      }
+      break;
     default:
       break; // SETUP has its own gear badge (drawMenuGearButton) - not part of this grid
   }
@@ -421,9 +455,10 @@ void handleMenuTouch() {
   }
 
   for (int i = 0; i < numApps; i++) {
-    int x = MENU_GRID_X + i * (MENU_ICON_SIZE + MENU_ICON_SPACING);
+    int x = menuItemX(i);
+    int y = menuItemY(i);
     
-    if (isButtonPressed(x, MENU_GRID_Y, MENU_ICON_SIZE, MENU_ICON_SIZE)) {
+    if (isButtonPressed(x, y, MENU_ICON_SIZE, MENU_ICON_SIZE)) {
       enterMode(apps[i].mode);
       return;
     }
@@ -450,6 +485,9 @@ void enterMode(AppMode mode) {
       break;
     case HOT_CUE:
       drawHotCueMode();
+      break;
+    case TRACK_INFO:
+      drawTrackInfoMode();
       break;
     case SETUP:
       initializeSetupMode(); // always return to Setup Home

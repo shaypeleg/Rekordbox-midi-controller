@@ -155,6 +155,7 @@ enum AppMode {
   STEMS,
   RB_VIEW,
   HOT_CUE,
+  TRACK_INFO,
   SETUP
 };
 

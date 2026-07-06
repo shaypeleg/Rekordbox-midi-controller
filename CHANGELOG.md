@@ -2,6 +2,155 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-06
+
+### Changed - Hot cue legend shows labels/time instead of letters
+
+The hot cue legend below the waveform now displays useful information:
+- **If a cue has a label** (e.g. "8 IN", "8 OUT", "DROP"): shows the label text
+- **If no label**: shows the cue's formatted timestamp (e.g. "1:32")
+- Visual style preserved: white text on colored background pill matching the
+  waveform marker color, so the DJ can associate legend entries with cue points.
+- Variable-width pills with progressive overflow handling: reduces gaps/padding
+  first, then truncates longest labels if needed.
+- Tap-to-expand: tapping a truncated pill reveals the full label text.
+- Legend now appears in both compact (font 1) and expanded (font 2) views.
+- All cues are always shown - never filtered or hidden.
+
+### Changed - Track comment two-tone coloring (entry vs exit transitions)
+
+Comments on the Track Info screen now split at `>>` into two colors:
+- **Before `>>`** (entry transition): yellow/amber (`THEME_WARNING`)
+- **After `>>`** (exit transition): cyan (`THEME_ACCENT`)
+
+For example a comment like `96 > STEM M+B >> Echo 1 out` renders the
+BPM/stem info in yellow and the echo-out instruction in cyan, so the DJ
+can quickly distinguish how to enter vs. leave each track. Comments
+without `>>` render entirely in yellow as before. Applies to both compact
+and expanded deck views via the shared `tiDrawComment()` helper.
+
+### Changed - Main menu reorder, renames, and centered rows
+
+Reorganised the main menu grid for a clearer two-row layout:
+
+- **Row 1**: FX, Decks, HotCue, Stems (controller functions)
+- **Row 2**: Track, Scroll, Views (display/navigation functions)
+- Renamed "SEARCH" to "SCROLL" (the screen scrolls on the waveform, not searches).
+- Renamed "VIEW" to "VIEWS".
+- Partial rows (e.g. 3 items in row 2) are now horizontally centred instead of
+  left-aligned, using new `menuItemX()`/`menuItemY()` helpers shared by both
+  `drawMenu()` and `handleMenuTouch()`.
+
+### Changed - Track Info screen UX overhaul (compact/expanded views, non-blocking back)
+
+Redesigned the Track Info screen for better usability on the small 2.8" CYD display:
+
+- **Back button always responsive**: All blocking operations (mDNS init,
+  service discovery, WebSocket connect) are deferred from `drawTrackInfoMode()`
+  into the handle loop. The draw function now returns instantly (just draws
+  the back chevron + status text), so the back button is responsive from the
+  very first loop iteration. Previously the screen blocked for 2+ seconds on
+  mDNS queries during which touch input was completely lost.
+- **Status text no longer overlaps track data**: The "Connecting..."/"Searching..."
+  messages only display when no waveform data has been received yet, preventing
+  the status from rendering on top of deck B's content area.
+- **Removed "TRACK INFO" header bar**: Freed ~48px of vertical space by removing
+  the full header. Only the back chevron remains in the top-left corner.
+- **Two-state view (compact/expanded)**:
+  - **Compact** (default): Both decks visible with deck label, title, BPM/Key,
+    waveform with hot cue markers, and comment (font 2, amber) on one screen.
+  - **Expanded**: Tap either deck to expand full-screen. Shows title (scrolling),
+    BPM/Key/Duration in large font (font 4), tall 72px waveform, hot cue legend
+    with wider colored boxes (font 2 letters), and comment (font 2, amber).
+    Tap anywhere to return to compact view.
+- **Swap A/B button**: Arrow icon (↑↓) in the top-right corner lets the user
+  manually swap deck A/B assignment when automatic detection gets it wrong.
+  Turns amber when swapped so the DJ knows the override is active.
+- **Content moved below back button**: `TI_CONTENT_Y` raised from 30 to 48 so
+  track data never overlaps the back chevron.
+- **Comment text highlighted**: Comments use `THEME_WARNING` (amber) color and
+  font 2 in both views since they contain critical DJ transition instructions.
+- **BPM/Key/Duration enlarged**: In expanded view these use font 4 (26px) for
+  at-a-glance readability. In compact view, BPM+Key use font 2 (was font 1).
+- **Hot cue legend readable**: Boxes are 20x14px with font 2 centered letters
+  (was 16x12 font 1), no longer cut off.
+- **Scrolling title marquee**: Long track titles that overflow the available
+  width now animate with a ping-pong scroll (pauses 1.5s at each end, scrolls
+  at 2px/50ms). Works in both compact and expanded views. Scroll resets when
+  a new track is loaded.
+- Refactored waveform and cue marker rendering into shared helper functions
+  (`tiDrawWaveform`, `tiDrawCueMarkers`) for reuse in both view states.
+
+### Fixed - Instant double detection during runtime in companion server
+
+Loading the same track on both decks (instant double) now works correctly
+during a live session, not just at startup. Previously the server treated the
+new FD as a "reload" of the existing deck because the path already matched.
+
+- Track per-path FD count between polls (`prev_path_fd_count`). When a new FD
+  appears for a path already on one deck AND the FD count for that path
+  increased, it's recognized as an instant double on the other deck.
+- Priority 3 (fill empty deck slots) now allows assigning a path already on the
+  other deck if its FD count is >= 2, catching instant doubles where the old
+  track's closure comes in a later poll than the new FD appearance.
+
+### Fixed - Track detection sync issues in companion server
+
+- **DeckTracker state machine**: Rewrote track detection to use temporal FD
+  tracking instead of naive "first 2 files from lsof." Rekordbox keeps
+  previously loaded files cached (open file descriptors), so lsof often shows
+  4+ audio files. The new `DeckTracker` class watches for NEW file descriptors
+  appearing between polls to identify actual deck load events.
+- **Reload detection**: Reloading the same track (same path, new FD) is now
+  correctly detected and pushes an update to the CYD.
+- **Quick replacement handling**: Loading track X then immediately replacing
+  with track Y on the same deck uses a timing heuristic (loads within 5s go
+  to the same deck slot; spaced loads alternate).
+- **Instant double at startup**: If the server starts while an instant double
+  is active (same path with 2+ FDs), both decks correctly show that track.
+- **Faster polling**: Reduced poll interval from 1.5s to 1.0s.
+- **mDNS resilience**: Server no longer crashes on restart if previous mDNS
+  registration is still cached on the network.
+- **Known limitation**: On server startup with cached files, the initial deck
+  guess (highest 2 FDs) may be incorrect. Self-corrects on the first track
+  load after startup.
+
+### Added - Track Info screen (real-time now-playing display from Rekordbox)
+
+New "TRACK" screen accessible from the main menu (cyan icon) that displays
+real-time track metadata from Rekordbox on the CYD, including:
+
+- **Per-deck display**: title, artist, BPM, key, comment for both loaded decks
+- **Color waveform**: 320-pixel-wide RGB waveform rendered from Rekordbox's
+  PWV5 analysis data, drawn with per-column vertical lines
+- **Hot cue overlay**: colored boxes with pad letters (A-H) positioned at the
+  correct time offset on the waveform
+
+Requires the companion Python server running on the same network as the CYD.
+The ESP32 discovers the server automatically via mDNS (zero configuration).
+
+Architecture:
+- `companion_app/nowplaying_server.py`: Python WebSocket server that monitors
+  Rekordbox via `lsof` (detects open audio files), queries `pyrekordbox` for
+  metadata/waveform/cues, and pushes JSON updates to connected clients.
+- `track_info_mode.h`: ESP32 WebSocket client with mDNS discovery, JSON
+  parsing (ArduinoJson), and TFT rendering.
+- Communication: WebSocket on port 9100, auto-discovered via
+  `_rekordbox-cyd._tcp.local` mDNS service.
+
+New dependencies:
+- ESP32: `ArduinoWebsockets` (Gil Maimon), `ArduinoJson` (Benoit Blanchon)
+- Python: `pyrekordbox`, `websockets`, `zeroconf`
+
+**Important**: Partition scheme must be changed to "Huge APP (3MB No OTA /
+1MB SPIFFS)" due to flash size constraints. The default 1.2MB partition is
+at 94% capacity without this feature.
+
+### Changed - Main menu grid now wraps to 2 rows
+
+The menu icon grid now supports wrapping to multiple rows (4 icons per row)
+to accommodate the 7th app icon (TRACK). Previously it was a single row of 6.
+
 ## 2026-07-05
 
 ### Changed - Main menu icon order
