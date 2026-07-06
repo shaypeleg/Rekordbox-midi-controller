@@ -13,7 +13,7 @@ using namespace websockets;
 // Layout constants - content starts well below the back chevron (r=13, cy=32)
 #define TI_CONTENT_Y     48
 #define TI_META_H        16
-#define TI_WF_H          36
+#define TI_WF_H          42
 #define TI_WF_H_EXPANDED 72
 #define TI_CUE_BOX_W    12
 #define TI_CUE_BOX_H    10
@@ -90,6 +90,7 @@ struct TitleScroll {
   int font;          // font used for drawing
 };
 static TitleScroll tiTitleScroll[2] = {{0,0,1,0,false,0,0,0,0,0}, {0,0,1,0,false,0,0,0,0,0}};
+static TitleScroll tiCommentScroll[2] = {{0,0,1,0,false,0,0,0,0,0}, {0,0,1,0,false,0,0,0,0,0}};
 
 static uint16_t rgb3to565(uint8_t r3, uint8_t g3, uint8_t b3) {
   uint8_t r = (r3 * 255) / 7;
@@ -471,11 +472,98 @@ static void tiDrawComment(const String& comment, int x, int y, int maxChars, int
   }
 }
 
+// Calculate the full pixel width a comment would occupy when rendered.
+static int tiCalcCommentWidth(const String& comment, int font) {
+  if (comment.length() == 0) return 0;
+  int splitIdx = comment.indexOf(">>");
+  if (splitIdx < 0) return tft.textWidth(comment, font);
+
+  String entry = comment.substring(0, splitIdx);
+  String exit = comment.substring(splitIdx + 2);
+  exit.trim();
+  int fontH = tft.fontHeight(font);
+  int triW = (fontH - 4) / 2 + 2;
+  int sepW = triW + 12;
+  int exitW = exit.length() > 0 ? tft.textWidth(exit, font) : 0;
+  return tft.textWidth(entry, font) + sepW + exitW;
+}
+
+// Draw a comment with ping-pong marquee scrolling when it overflows availW.
+static void tiDrawCommentWithScroll(int deckIdx, const String& comment,
+                                    int x, int y, int availW, int font) {
+  if (comment.length() == 0) return;
+  TitleScroll& sc = tiCommentScroll[deckIdx];
+  int fullW = tiCalcCommentWidth(comment, font);
+
+  sc.drawX = x;
+  sc.drawY = y;
+  sc.clipW = availW;
+  sc.font = font;
+
+  if (fullW <= availW) {
+    sc.maxOffset = 0;
+    sc.offset = 0;
+    tiDrawComment(comment, x, y, 255, font);
+  } else {
+    sc.maxOffset = fullW - availW;
+    if (sc.offset > sc.maxOffset) {
+      sc.offset = 0;
+      sc.direction = 1;
+    }
+    tiDrawComment(comment, x - sc.offset, y, 255, font);
+    int fontH = tft.fontHeight(font);
+    tft.fillRect(0, y, x, fontH, THEME_BG);
+    tft.fillRect(x + availW, y, 320 - (x + availW), fontH, THEME_BG);
+  }
+}
+
+// Animate comment scroll for one deck. Returns true if redrawn.
+static bool tiUpdateCommentScroll(int deckIdx) {
+  TitleScroll& sc = tiCommentScroll[deckIdx];
+  if (sc.maxOffset <= 0) return false;
+
+  unsigned long now = millis();
+
+  if (sc.paused) {
+    if (now - sc.pauseStart >= TI_SCROLL_PAUSE_MS) {
+      sc.paused = false;
+      sc.lastStep = now;
+    }
+    return false;
+  }
+
+  if (now - sc.lastStep < TI_SCROLL_STEP_MS) return false;
+  sc.lastStep = now;
+
+  sc.offset += sc.direction * TI_SCROLL_PX_STEP;
+
+  if (sc.offset >= sc.maxOffset) {
+    sc.offset = sc.maxOffset;
+    sc.direction = -1;
+    sc.paused = true;
+    sc.pauseStart = now;
+  } else if (sc.offset <= 0) {
+    sc.offset = 0;
+    sc.direction = 1;
+    sc.paused = true;
+    sc.pauseStart = now;
+  }
+
+  TrackDeck& d = tiDecks[deckIdx];
+  int fontH = tft.fontHeight(sc.font);
+  tft.fillRect(sc.drawX, sc.drawY, sc.clipW, fontH, THEME_BG);
+  tiDrawComment(d.comment, sc.drawX - sc.offset, sc.drawY, 255, sc.font);
+  tft.fillRect(0, sc.drawY, sc.drawX, fontH, THEME_BG);
+  tft.fillRect(sc.drawX + sc.clipW, sc.drawY, 320 - (sc.drawX + sc.clipW), fontH, THEME_BG);
+
+  return true;
+}
+
 // Compact deck view: title + waveform + cue legend + comment
 static void tiDrawDeckCompact(int deckIdx, int baseY) {
   TrackDeck& d = tiDecks[deckIdx];
-  int wfY = baseY + TI_META_H + 2;
-  int commentY = wfY + TI_WF_H + 2;
+  int wfY = baseY + TI_META_H + 5;
+  int commentY = wfY + TI_WF_H + 5;
 
   tiDeckTouchY[deckIdx] = baseY;
   tiDeckTouchH[deckIdx] = commentY + 16 - baseY;
@@ -501,8 +589,8 @@ static void tiDrawDeckCompact(int deckIdx, int baseY) {
   tiDrawWaveform(d, wfY, TI_WF_H);
   tiDrawCueMarkers(d, wfY, TI_WF_H);
 
-  // Comment below waveform (font 2 - critical DJ transition info)
-  tiDrawComment(d.comment, 4, commentY, 35, 2);
+  // Comment below waveform (scrolls if too long)
+  tiDrawCommentWithScroll(deckIdx, d.comment, 4, commentY, 312, 2);
 }
 
 // Format seconds into M:SS
@@ -548,13 +636,13 @@ static void tiDrawDeckExpanded(int deckIdx, int baseY) {
   tiDrawCueMarkers(d, wfY, TI_WF_H_EXPANDED);
 
   // Row 4: Hot cue legend - variable-width pills with label or time
-  int legendY = wfY + TI_WF_H_EXPANDED + 3;
+  int legendY = wfY + TI_WF_H_EXPANDED + 6;
   tiDrawCueLegend(d, deckIdx, legendY, 2);
 
-  // Row 5: Comment (two-tone: entry in amber, exit in cyan)
-  int commentY = legendY + 18;
-  if (commentY < 226) {
-    tiDrawComment(d.comment, 4, commentY, 38, 2);
+  // Row 5: Comment (~1.5x size via font 4, scrolls if too long)
+  int commentY = legendY + 22;
+  if (commentY + 26 <= 240) {
+    tiDrawCommentWithScroll(deckIdx, d.comment, 4, commentY, 312, 4);
   }
 }
 
@@ -614,7 +702,7 @@ static void tiRedrawContent() {
   if (tiExpandedDeck == -1) {
     // Compact: both decks stacked
     int topY = TI_CONTENT_Y;
-    int botY = TI_CONTENT_Y + TI_META_H + 2 + TI_WF_H + 2 + 16 + 10;
+    int botY = TI_CONTENT_Y + TI_META_H + 5 + TI_WF_H + 5 + 16 + 10;
     tiDrawDeckCompact(topIdx, topY);
     tiDrawDeckCompact(botIdx, botY);
   } else {
@@ -640,6 +728,7 @@ void initializeTrackInfoMode() {
   memset(tiDecks, 0, sizeof(tiDecks));
   for (int i = 0; i < 2; i++) {
     tiTitleScroll[i] = {0, 0, 1, 0, false, 0, 0, 0, 0, 0};
+    tiCommentScroll[i] = {0, 0, 1, 0, false, 0, 0, 0, 0, 0};
   }
   tiWsClient.onMessage(tiOnMessage);
   tiWsClient.onEvent(tiOnEvent);
@@ -677,6 +766,10 @@ void handleTrackInfoMode() {
       tiTitleScroll[i].direction = 1;
       tiTitleScroll[i].paused = true;
       tiTitleScroll[i].pauseStart = millis();
+      tiCommentScroll[i].offset = 0;
+      tiCommentScroll[i].direction = 1;
+      tiCommentScroll[i].paused = true;
+      tiCommentScroll[i].pauseStart = millis();
     }
     // Redraw swap icon (color changes) and content
     tft.fillRect(TI_SWAP_BTN_X, TI_SWAP_BTN_Y, TI_SWAP_BTN_W, TI_SWAP_BTN_H, THEME_BG);
@@ -779,16 +872,23 @@ void handleTrackInfoMode() {
       tiTitleScroll[i].direction = 1;
       tiTitleScroll[i].paused = true;
       tiTitleScroll[i].pauseStart = millis();
+      tiCommentScroll[i].offset = 0;
+      tiCommentScroll[i].direction = 1;
+      tiCommentScroll[i].paused = true;
+      tiCommentScroll[i].pauseStart = millis();
     }
     tiRedrawContent();
   }
 
-  // Animate title scrolling (runs every loop iteration, self-throttled)
+  // Animate title and comment scrolling (runs every loop iteration, self-throttled)
   if (tiExpandedDeck == -1) {
     tiUpdateTitleScroll(0);
     tiUpdateTitleScroll(1);
+    tiUpdateCommentScroll(0);
+    tiUpdateCommentScroll(1);
   } else {
     tiUpdateTitleScroll(tiExpandedDeck);
+    tiUpdateCommentScroll(tiExpandedDeck);
   }
 }
 

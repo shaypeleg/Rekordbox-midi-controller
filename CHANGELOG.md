@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-07
+
+### Changed - Improved spacing and larger comment font in track views
+
+Compact (dual-deck) view:
+- Increased gap between title/BPM row and waveform top from 2px to 5px.
+- Increased gap between waveform bottom and comment from 2px to 5px.
+
+Expanded (single-deck) view:
+- Increased gap between waveform bottom and hot cue legend from 3px to 6px.
+- Increased gap between hot cue legend and comment from 18px to 22px.
+- Comment font increased from font 2 (16px) to font 4 (26px) for ~1.5x
+  readability improvement.
+
+### Changed - Taller waveforms in compact (dual deck) view
+
+Increased the waveform height in the compact two-deck view from 36px to
+42px per deck. The extra 12px total is absorbed by the unused space at
+the bottom of the screen.
+
+### Changed - Comment text scrolls when it overflows the screen
+
+Comments that are too long to fit on one line now use the same ping-pong
+marquee animation as track titles (pauses 1.5s at each end, scrolls at
+2px/50ms). Applies to both compact (dual-deck) and expanded (single-deck)
+views. Removes the old fixed character-count truncation — the full comment
+is always accessible via the scroll.
+
+Reverted the expanded-view comment font from 4 back to 2 (font 4 was too
+large for the display).
+
 ## 2026-07-06
 
 ### Changed - Hot cue legend shows labels/time instead of letters
