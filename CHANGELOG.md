@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-09
+
+### Fixed - WiFi scan list empty until RESCAN
+
+The first Setup → WiFi scan often showed no networks because ESP32 cannot
+scan reliably while a boot-time `WiFi.begin()` reconnect is still running.
+`scanNetworks()` now disconnects any in-progress connection, clears a stale
+scan, and retries once so the list appears on the first open.
+
 ## 2026-07-07
 
 ### Changed - Improved spacing and larger comment font in track views

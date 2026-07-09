@@ -56,8 +56,23 @@ void updateWiFiManager() {
 
 // Scans nearby networks and returns up to WIFI_MAX_SCAN_RESULTS, sorted by
 // signal strength (strongest first). Blocks for a couple of seconds.
+//
+// ESP32 often returns 0 on the first scan while a WiFi.begin() from boot is
+// still in progress. Abort that attempt, clear any stale scan, and retry once.
 int scanNetworks(WiFiNetwork results[WIFI_MAX_SCAN_RESULTS]) {
+  if (wifiConnecting) {
+    wifiConnecting = false;
+    WiFi.disconnect();
+    delay(100);
+  }
+
+  WiFi.scanDelete();
   int found = WiFi.scanNetworks();
+  if (found <= 0) {
+    // First scan after boot/connect often fails; give the radio a beat and retry.
+    delay(100);
+    found = WiFi.scanNetworks();
+  }
   if (found < 0) found = 0;  // WIFI_SCAN_FAILED / WIFI_SCAN_RUNNING
 
   int total = min(found, 32);
