@@ -86,13 +86,12 @@ const byte fxPadD2Notes[3] = {NOTE_FX_D2_1, NOTE_FX_D2_2, NOTE_FX_D2_3};
 // use a larger gap and always trail the last Note so the CC cannot clobber it.
 #define FXPAD_MIDI_GAP_MS 40
 #define FXPAD_GLOW_R_MAX  24
-#define FXPAD_GLOW_FRAME_MS 35
-#define FXPAD_TRAIL_LEN    28
-#define FXPAD_TRAIL_LIFE   16
-#define FXPAD_TRAIL_MIN_DIST 3
-// Slightly finer blocks than before — still pixelated, reads smoother in motion
-#define FXPAD_PIXEL_SIZE   3
-#define FXPAD_CURSOR_RADIUS 18
+#define FXPAD_GLOW_FRAME_MS 45
+#define FXPAD_TRAIL_LEN    16
+#define FXPAD_TRAIL_LIFE   10
+#define FXPAD_TRAIL_MIN_DIST 6
+// Block size for the djay-style pixelated glow (larger = chunkier pixels)
+#define FXPAD_PIXEL_SIZE   4
 
 // Per-slot LevelDepth CCs — same order as FX1/FX2/FX3 buttons
 const byte fxPadLevelCcD1[3] = {CC_FX_LEVEL_D1_1, CC_FX_LEVEL_D1_2, CC_FX_LEVEL_D1_3};
@@ -141,7 +140,6 @@ void fxPadDrawCursor(int px, int py);
 void fxPadRestorePatch(int px, int py, int r);
 void fxPadTrailClear();
 void fxPadTrailAdd(int px, int py);
-void fxPadTrailAddSegment(int x0, int y0, int x1, int y1);
 void fxPadTrailTick();
 void fxPadDrawTrailBlob(int px, int py, uint8_t life);
 void fxPadDrawPixelGlow(int px, int py, int radius, uint8_t brightness);
@@ -444,29 +442,25 @@ void fxPadTrailClear() {
   fxPadTrailHead = 0;
 }
 
-// Soft neon blue glow built from pixel blocks (no outline). Smooth radial falloff
-// via more palette steps + ease-out curve; brightness scales trail fade.
+// djay-style pixelated blue glow: blocky radial falloff, no outline/contour.
+// brightness 0-255 scales overall intensity (for trail fade).
 void fxPadDrawPixelGlow(int px, int py, int radius, uint8_t brightness) {
   if (radius < FXPAD_PIXEL_SIZE) radius = FXPAD_PIXEL_SIZE;
   int r2 = radius * radius;
   int step = FXPAD_PIXEL_SIZE;
 
-  // More bands = smoother gradient while staying discrete/pixelated
+  // Quantized neon blues — fewer steps = more posterized / pixelated look
   static const uint16_t palette[] = {
-    0x0008,
-    0x0092,
-    0x0115,
-    0x0198,
-    0x021B,
-    0x02BE,
-    0x03BF,
-    0x04DF,
+    0x0010,  // near-black blue (outer)
+    0x00B5,
+    0x019F,
+    0x02BF,
+    0x045F,
     0x05FF,
-    0x07FF,
-    0xAFFF,
-    0xDFFF
+    0x07FF,  // cyan
+    0xAFFF   // bright core
   };
-  const int palN = 12;
+  const int palN = 8;
 
   for (int by = -radius; by <= radius; by += step) {
     for (int bx = -radius; bx <= radius; bx += step) {
@@ -475,15 +469,13 @@ void fxPadDrawPixelGlow(int px, int py, int radius, uint8_t brightness) {
       int d2 = cx * cx + cy * cy;
       if (d2 > r2) continue;
 
-      // Linear falloff then ease-out (smoothstep-ish) for softer edge
+      // 0 at edge → 1 at center
       int fall = 255 - (d2 * 255) / r2;
-      // ease-out: fall^2 / 255
-      fall = (fall * fall) / 255;
       fall = (fall * brightness) / 255;
-
+      // Posterize into palette bands
       int band = (fall * (palN - 1)) / 255;
-      if (band < 1 && fall > 12) band = 1;
-      if (band < 1) continue;
+      if (band < 1 && fall > 8) band = 1;  // keep a faint outer pixel ring
+      if (band < 1) continue;              // skip near-bg cells (soft edge, no contour)
 
       int sx = px + bx;
       int sy = py + by;
@@ -497,18 +489,9 @@ void fxPadDrawPixelGlow(int px, int py, int radius, uint8_t brightness) {
   }
 }
 
-// Same glow style as the finger tip — radius/brightness ease down with life.
 void fxPadDrawTrailBlob(int px, int py, uint8_t life) {
-  // life FXPAD_TRAIL_LIFE → nearly full cursor size; life 1 → small dim puff
-  int radius = 4 + (life * (FXPAD_CURSOR_RADIUS - 4)) / FXPAD_TRAIL_LIFE;
-  radius = (radius / FXPAD_PIXEL_SIZE) * FXPAD_PIXEL_SIZE;
-  if (radius < FXPAD_PIXEL_SIZE * 2) radius = FXPAD_PIXEL_SIZE * 2;
-
-  // Smooth brightness curve (ease-out) so the trail dissolves softly
-  int t = (life * 255) / FXPAD_TRAIL_LIFE;
-  uint8_t brightness = (uint8_t)((t * t) / 255);
-  if (brightness < 28 && life > 0) brightness = 28;
-
+  int radius = 6 + life;
+  uint8_t brightness = (uint8_t)(40 + life * 20);
   fxPadDrawPixelGlow(px, py, radius, brightness);
 }
 
@@ -521,34 +504,12 @@ void fxPadTrailAdd(int px, int py) {
   fxPadDrawTrailBlob(px, py, FXPAD_TRAIL_LIFE);
 }
 
-// Fill gaps when the finger jumps — continuous ribbon of glow stamps.
-void fxPadTrailAddSegment(int x0, int y0, int x1, int y1) {
-  int dx = x1 - x0;
-  int dy = y1 - y0;
-  int adx = abs(dx);
-  int ady = abs(dy);
-  // Cheap length approx — enough to space stamps evenly along the stroke
-  int dist = (adx > ady) ? (adx + ady / 2) : (ady + adx / 2);
-  if (dist < 1) {
-    fxPadTrailAdd(x1, y1);
-    return;
-  }
-  int steps = dist / FXPAD_TRAIL_MIN_DIST;
-  if (steps < 1) steps = 1;
-  if (steps > 8) steps = 8;
-  for (int s = 1; s <= steps; s++) {
-    int x = x0 + (dx * s) / steps;
-    int y = y0 + (dy * s) / steps;
-    fxPadTrailAdd(x, y);
-  }
-}
-
 void fxPadTrailTick() {
   for (int i = 0; i < FXPAD_TRAIL_LEN; i++) {
     if (fxPadTrailLife[i] == 0) continue;
     int px = fxPadTrailX[i];
     int py = fxPadTrailY[i];
-    int r = FXPAD_CURSOR_RADIUS + FXPAD_PIXEL_SIZE * 2;
+    int r = 6 + FXPAD_TRAIL_LIFE + FXPAD_PIXEL_SIZE;
     fxPadRestorePatch(px, py, r);
     fxPadTrailLife[i]--;
     if (fxPadTrailLife[i] > 0) {
@@ -562,15 +523,16 @@ void fxPadEraseCursor() {
   fxPadRestorePatch(fxPadCursorPx, fxPadCursorPy, FXPAD_GLOW_R_MAX + FXPAD_PIXEL_SIZE);
 }
 
-// Pixelated neon touch point — same renderer as the trail, full brightness.
+// Pixelated neon touch point (like djay Pro pad), no circle contour.
 void fxPadDrawCursor(int px, int py) {
   fxPadEraseCursor();
 
   int pulse = fxPadGlowPhase;
   if (pulse > 8) pulse = 16 - pulse;
-  int outer = FXPAD_CURSOR_RADIUS + (pulse / 3) * FXPAD_PIXEL_SIZE;
+  // Snap radius to pixel grid so the blob stays blocky while pulsing
+  int outer = 16 + (pulse / 2) * FXPAD_PIXEL_SIZE / 2;
   outer = (outer / FXPAD_PIXEL_SIZE) * FXPAD_PIXEL_SIZE;
-  if (outer < FXPAD_PIXEL_SIZE * 4) outer = FXPAD_PIXEL_SIZE * 4;
+  if (outer < 12) outer = 12;
 
   fxPadDrawPixelGlow(px, py, outer, 255);
 
@@ -781,9 +743,9 @@ void handleFxPadPad() {
 
       bool moved = abs(px - fxPadCursorPx) >= FXPAD_TRAIL_MIN_DIST ||
                    abs(py - fxPadCursorPy) >= FXPAD_TRAIL_MIN_DIST;
-      // Continuous pixel-glow ribbon matching the tip style
+      // Drop a glow stamp at the previous point so motion leaves a fading trail
       if (moved && fxPadCursorPx >= 0) {
-        fxPadTrailAddSegment(fxPadCursorPx, fxPadCursorPy, px, py);
+        fxPadTrailAdd(fxPadCursorPx, fxPadCursorPy);
       }
       if (xChanged || yChanged || glowTick || moved ||
           abs(px - fxPadCursorPx) >= 2 || abs(py - fxPadCursorPy) >= 2) {

@@ -36,8 +36,8 @@ both. Back on the pad returns to setup; back on setup returns to the menu.
 
 ### Changed - PAD FX touch glow
 
-Shared pixelated neon glow for tip + trail (same soft falloff, no outline).
-Denser interpolated trail stamps and longer ease-out fade for smoother motion.
+djay-style pixelated neon blue touch blob (4px blocks, no circle outline),
+plus a fading pixelated trail that follows finger movement.
 
 ### Fixed - PAD FX On notes dropped when Level CCs followed immediately
 
