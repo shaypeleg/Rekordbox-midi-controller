@@ -18,6 +18,7 @@
 #include "rb_view_mode.h"
 #include "hot_cue_mode.h"
 #include "track_info_mode.h"
+#include "fx_pad_mode.h"
 #include "setup_mode.h"
 #include "ui_elements.h"
 #include "midi_utils.h"
@@ -72,18 +73,19 @@ struct AppIcon {
 // icon in the corner of the menu instead of a full-size function button.
 #define MAX_APPS 12
 AppIcon apps[] = {
-  // Row 1
+  // Row 1 - performance actions (5 across)
   {"FX", 0xF800, EFFECTS},            // Red
+  {"PAD FX", 0xFD20, FX_PAD},          // Amber - Combo FX X/Y pad
   {"DECKS", 0x07E0, DECK_CONTROLS},   // Green
-  {"HOTCUE", 0xF81F, HOT_CUE},        // Magenta
   {"STEMS", 0x781F, STEMS},            // Purple
-  // Row 2
+  {"HOTCUE", 0xF81F, HOT_CUE},        // Magenta
+  // Row 2 - views / display
   {"TRACK", 0x07FF, TRACK_INFO},       // Cyan - Now Playing
   {"SCROLL", 0x001F, NEEDLE_SEARCH},   // Blue - Waveform Scroll
   {"VIEWS", 0xFDA0, RB_VIEW},          // Orange
 };
 
-int numApps = 7;
+int numApps = 8;
 
 // Small settings shortcut, bottom-right of the menu. Sized smaller than the
 // main function icons (it's a secondary, infrequent action) but still a
@@ -96,8 +98,8 @@ int numApps = 7;
 // the tap targets can never drift out of sync with what's drawn.
 #define MENU_HEADER_H 54
 #define MENU_ICON_SIZE 44
-#define MENU_ICON_SPACING 8
-#define MENU_COLS 4
+#define MENU_ICON_SPACING 6
+#define MENU_COLS 5
 #define MENU_ROW_SPACING 22
 #define MENU_GRID_BLOCK_H (MENU_ICON_SIZE + 5 + 10)
 #define MENU_GRID_Y (MENU_HEADER_H + 10)
@@ -218,6 +220,7 @@ void setup() {
   initializeRbViewMode();
   initializeHotCueMode();
   initializeTrackInfoMode();
+  initializeFxPadMode();
   initializeSetupMode();
   
   drawMenu();
@@ -290,6 +293,9 @@ void loop() {
       break;
     case TRACK_INFO:
       handleTrackInfoMode();
+      break;
+    case FX_PAD:
+      handleFxPadMode();
       break;
     case SETUP:
       handleSetupMode();
@@ -443,6 +449,13 @@ void drawAppGraphics(AppMode mode, int x, int y, int iconSize) {
         tft.drawFastVLine(centerX + 11, centerY - 6, 12, THEME_BG);
       }
       break;
+    case FX_PAD: // X/Y crosshair pad
+      {
+        tft.drawFastHLine(centerX - 10, centerY, 20, THEME_BG);
+        tft.drawFastVLine(centerX, centerY - 10, 20, THEME_BG);
+        tft.drawCircle(centerX + 4, centerY - 4, 3, THEME_BG);
+      }
+      break;
     default:
       break; // SETUP has its own gear badge (drawMenuGearButton) - not part of this grid
   }
@@ -489,6 +502,10 @@ void enterMode(AppMode mode) {
     case TRACK_INFO:
       drawTrackInfoMode();
       break;
+    case FX_PAD:
+      initializeFxPadMode();
+      drawFxPadMode();
+      break;
     case SETUP:
       initializeSetupMode(); // always return to Setup Home
       drawSetupMode();
@@ -499,6 +516,9 @@ void enterMode(AppMode mode) {
 
 void exitToMenu() {
   currentMode = MENU;
+  // Reason: gated FX pad must clear Beat FX + reset Color FX to center
+  // before the blanket Note Off sweep, or Color FX can linger at last Y.
+  fxPadReleaseEffects();
   stopAllModes();
   delay(50);
   drawMenu();

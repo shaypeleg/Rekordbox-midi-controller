@@ -2,6 +2,51 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-15
+
+### Added - FX Pad (Rekordbox Combo FX style)
+
+New **PAD FX** main-menu screen for gated Beat FX + Color FX on an X/Y
+touch pad (inspired by DDJ-RZX Combo FX), adapted to Rekordbox MIDI Learn
+limits (no direct FX/CFX type select — only Next/Back for CFX):
+
+1. **Setup screen** — arm any combo of FX1/FX2/FX3 on Deck 1 and Deck 2
+   (same Notes 30–35 as the Effects screen / `FX1-1On`…`FX2-3On`). Cycle
+   Color FX with Prev CFX / Next CFX (Notes 95 / 94 → CFX Select Back/Next).
+   Then tap **DECK1** or **DECK2** (pad controls that deck only).
+2. **Pad screen** — full-bleed dark X/Y pad with crosshair and glowing cursor.
+   - Finger down → toggle that deck's armed FX On (Effects-paddle behaviour) + drive CCs
+   - **X axis** → LevelDepth CC for every armed FX slot on that deck
+     (D1: CC 90/91/96, D2: CC 97/98/99)
+   - **Y axis** → CFX Parameter (CC 92 or 93 for the active deck; center ≈ 64 = off)
+   - Finger up → toggle FX Off, armed LevelDepth → 0, CFX Parameter → 64
+3. **MAP screen** — hidden by default (`FXPAD_SHOW_MAP`); D1/D2 Level + CFX Learn helpers kept in code.
+
+Menu order: FX, **PAD FX**, Decks, Stems, HotCue (row 1 performance);
+Track, Scroll, Views (row 2 views).
+
+Finger must stay on the pad for effects to apply; lifting the finger removes
+both. Back on the pad returns to setup; back on setup returns to the menu.
+
+### Changed - PAD FX setup: hide MAP, DECK1/DECK2 labels, more CFX spacing
+
+- Hidden the MAP button (`FXPAD_SHOW_MAP 0`; set to 1 to bring Learn helpers back).
+- Renamed START 1 / START 2 to **DECK1** / **DECK2**.
+- Increased space between FX1/2/3 buttons and the COLOR FX row.
+
+### Changed - PAD FX touch glow
+
+Shared pixelated neon glow for tip + trail (same soft falloff, no outline).
+Denser interpolated trail stamps and longer ease-out fade for smoother motion.
+
+### Fixed - PAD FX On notes dropped when Level CCs followed immediately
+
+Touching the pad sent FX On (Notes 30–35) then LevelDepth CCs with no gap
+after the last Note. NimBLE notify on one characteristic dropped that Note,
+so a single armed FX never turned on, and with two armed only the first did.
+Increased MIDI spacing to 40ms and added a trailing gap after FX On toggles
+(and after Level bursts) before the next message.
+
 ## 2026-07-09
 
 ### Fixed - WiFi scan list empty until RESCAN

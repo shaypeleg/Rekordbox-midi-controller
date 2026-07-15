@@ -12,8 +12,9 @@ This started as an attempt to use the CYD as a live waveform display for a DDJ-R
 
 Every screen (except the main menu) can be exited via the small chevron (`‹`) in the top-left corner - it jumps straight back to the main menu, no matter how deep you are (e.g. from the WiFi password keyboard).
 
-- **Main Menu** - jump to any screen below. Two rows of icons: Row 1 (FX, Decks, HotCue, Stems) for controller functions, Row 2 (Track, Scroll, Views) for display/navigation. Small Bluetooth/WiFi icon badges top-right: blue = BT connected, green = WiFi connected, amber = WiFi connecting, dim gray = off. Setup gear icon in the bottom-right corner.
+- **Main Menu** - jump to any screen below. Two rows of icons: Row 1 performance actions (FX, Pad FX, Decks, Stems, HotCue), Row 2 views (Track, Scroll, Views). Small Bluetooth/WiFi icon badges top-right: blue = BT connected, green = WiFi connected, amber = WiFi connecting, dim gray = off. Setup gear icon in the bottom-right corner.
 - **FX (Effects)** - per-deck FX control with 3 FX slot buttons (FX1/FX2/FX3) and a paddle switch per deck. Tap buttons to arm FX slots, push the paddle to activate all armed slots at once (sends MIDI), pull paddle back to deactivate. Active FX flash to distinguish from merely armed.
+- **FXPAD (Combo FX Pad)** - gated Beat FX + Color FX on an X/Y pad. Setup: arm FX1/FX2/FX3 per deck (same MIDI notes as the Effects screen), cycle Color FX with Prev CFX / Next CFX, then **DECK1** or **DECK2** for that deck only. Pad: finger down turns that deck's armed FX on and drives Level (X) + CFX Parameter (Y); finger up turns FX off and resets CFX to center.
 - **DECKS (Deck Controls)** - Master Tempo, Quantize, Slip Mode, and Vinyl toggles for Deck 1 and Deck 2.
 - **SCROLL (Song Search)** - two touch strips (one per deck) for needle search position, plus Previous Cue / Next Cue buttons below each strip.
 - **STEMS** - Vocal / Melody / Bass / Drums stem toggles for Deck 1 and Deck 2, plus a **SOLO** toggle per deck: off, tapping a stem just adds/removes it; on, tapping a stem isolates it (mutes the other three), and tapping the isolated stem again restores all four.
@@ -54,6 +55,14 @@ This device is a **generic BLE MIDI controller** - it doesn't ship with a Rekord
 | Hot Cue | Deck 2 Hot Cue 1-8 | Notes 78-85 | Deck 2 `HotCue 1`-`HotCue 8` |
 | Hot Cue | Mode enter (on screen open) | Note 86 | Hot Cue pad mode switch |
 | Hot Cue | View switch (on screen open) | Note 87 | Screen view switch |
+| FX Pad | Deck 1 FX1 / FX2 / FX3 (gate) | Notes 30, 31, 32 | Same as Effects: `FX1-1On` … `FX1-3On` |
+| FX Pad | Deck 2 FX1 / FX2 / FX3 (gate) | Notes 33, 34, 35 | Same as Effects: `FX2-1On` … `FX2-3On` |
+| FX Pad | FX1-1 / FX1-2 / FX1-3 LevelDepth (X) | CC 90, 91, 96 | `FX1-1 LevelDepth` … `FX1-3 LevelDepth` |
+| FX Pad | FX2-1 / FX2-2 / FX2-3 LevelDepth (X) | CC 97, 98, 99 | `FX2-1 LevelDepth` … `FX2-3 LevelDepth` |
+| FX Pad | CH1 / CH2 CFX Parameter (Y axis) | CC 92, 93 | `CFX ParameterCH1` / `CFX ParameterCH2` |
+| FX Pad | CFX Select Back / Next | Notes 95, 94 | `CFX Select Back` / `CFX Select Next` |
+
+**FX Pad gate behaviour:** arm any combo of FX1–3 on each deck on the setup screen (no MIDI yet). Tap **DECK1** or **DECK2** to open the pad for that deck only. While the finger is on the pad, that deck's armed slots toggle On (Notes 30–32 or 33–35) and **X sends LevelDepth to every armed slot** (e.g. FX1+FX2 armed → CC 90 and 91 together). Y drives that deck's CFX Parameter. On release: FX Off, armed LevelDepth → 0, CFX Parameter → 64.
 
 ## What You Need
 

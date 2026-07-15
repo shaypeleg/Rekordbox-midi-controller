@@ -137,6 +137,27 @@ void setBackLED(uint8_t r, uint8_t g, uint8_t b);
 // (e.g. switching screen view) when the Hot Cue screen opens.
 #define NOTE_HOTCUE_VIEW_SWITCH  87
 
+// FX Pad (Combo FX style) - gated FX1/2/3 + CFX Parameter on an X/Y pad.
+// Arm FX slots on the setup screen (same notes as Effects: 30-35). Pad touch
+// toggles those notes On then Off (same as the Effects paddle).
+// X drives Level/Depth CC for every armed slot on the active deck.
+// Y = CFX Parameter (64 = center / neutral).
+// Per-slot LevelDepth CCs (map each to FX1-1…FX2-3 LevelDepth in MIDI Learn).
+// FX1-1 uses CC 90 (B05A) to match an existing mapping.
+#define CC_FX_LEVEL_D1_1  90
+#define CC_FX_LEVEL_D1_2  91
+#define CC_FX_LEVEL_D1_3  96
+#define CC_FX_LEVEL_D2_1  97
+#define CC_FX_LEVEL_D2_2  98
+#define CC_FX_LEVEL_D2_3  99
+
+#define CC_FXPAD_COLOR_Y_D1  92
+#define CC_FXPAD_COLOR_Y_D2  93
+
+// CFX Select Next / Back (map to CFX Select Next / CFX Select Back in MIDI Learn)
+#define NOTE_CFX_SELECT_NEXT  94
+#define NOTE_CFX_SELECT_BACK  95
+
 // Touch handling
 struct TouchState {
   bool wasPressed = false;
@@ -156,6 +177,7 @@ enum AppMode {
   RB_VIEW,
   HOT_CUE,
   TRACK_INFO,
+  FX_PAD,
   SETUP
 };
 
