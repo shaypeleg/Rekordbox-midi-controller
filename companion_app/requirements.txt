@@ -1,3 +1,4 @@
 pyrekordbox
 websockets
 zeroconf
+python-rtmidi

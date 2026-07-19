@@ -5,15 +5,23 @@ Monitors Rekordbox via lsof to detect loaded tracks, extracts metadata,
 waveform, and hot cues from pyrekordbox, then pushes updates to connected
 CYD (ESP32) clients over WebSocket.
 
+Also starts the crossfader relay (see crossfader_relay.py), which feeds
+the DDJ-REV5's crossfader position to the CYD for the Auto Cue feature -
+optional, degrades gracefully if python-rtmidi isn't installed or either
+MIDI device isn't connected.
+
 Auto-discoverable via mDNS (_rekordbox-cyd._tcp.local on port 9100).
 
 Usage:
-    python3 companion_app/nowplaying_server.py
+    ./run.sh              # normal: Track Info server + crossfader relay
+    ./run.sh -d           # also print live DDJ-REV5 MIDI to the terminal
+    ./run.sh -h           # help
 
 Requires:
-    pip install pyrekordbox websockets zeroconf
+    pip install pyrekordbox websockets zeroconf python-rtmidi
 """
 
+import argparse
 import asyncio
 import json
 import logging
@@ -28,12 +36,26 @@ from typing import Optional
 import websockets
 from zeroconf import ServiceInfo
 
+try:
+    from crossfader_relay import CrossfaderRelay
+except ImportError:
+    CrossfaderRelay = None  # python-rtmidi not installed - Auto Cue relay disabled
+
+try:
+    from midi_diagnostic import MidiDiagnostic
+except ImportError:
+    MidiDiagnostic = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s - %(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("nowplaying")
+# mDNS advertisement attracts non-WebSocket probes on port 9100; those fail
+# the handshake and the websockets library logs them as ERROR by default.
+# Quiet that noise - real client connect/disconnect still goes through our logger.
+logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
 
 WS_PORT = 9100
 POLL_INTERVAL = 1.0
@@ -595,11 +617,65 @@ async def start_mdns(ip: str, port: int):
     return azc
 
 
-async def main():
+HELP_TEXT = """\
+CYD companion app — Track Info server + Auto Cue crossfader relay.
+
+Usage:
+  ./run.sh              Start normally
+  ./run.sh -d           Start with DDJ-REV5 MIDI diagnostic (prints controls)
+  ./run.sh -h           Show this help
+
+What runs by default:
+  Track Info WebSocket   Port 9100, mDNS auto-discovery for the CYD
+  Crossfader relay       DDJ-REV5 CrossFader (B6 1F) → RB-MIDI CC 46 (Auto Cue)
+
+With -d (diagnostic):
+  Also listens to the DDJ-REV5 MIDI port and prints every button / knob /
+  fader event using Rekordbox-style codes (e.g. B61F, 9007) plus a short
+  label. Safe alongside Rekordbox — macOS allows multiple MIDI listeners.
+
+Requirements: DDJ-REV5 connected; for Auto Cue also pair the CYD as RB-MIDI.
+"""
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        add_help=False,
+        description="Rekordbox CYD companion server",
+    )
+    parser.add_argument(
+        "-d", "--diagnostic",
+        action="store_true",
+        help="Print live DDJ-REV5 MIDI activity to the terminal",
+    )
+    parser.add_argument(
+        "-h", "--help",
+        action="store_true",
+        help="Show help and exit",
+    )
+    return parser.parse_args(argv)
+
+
+async def main(diagnostic: bool = False):
     ip = get_local_ip()
     log.info(f"Starting Now-Playing server on {ip}:{WS_PORT}")
 
     azc = await start_mdns(ip, WS_PORT)
+
+    relay = CrossfaderRelay() if CrossfaderRelay else None
+    if relay is not None and not relay.start():
+        relay = None
+    elif relay is None:
+        log.warning("python-rtmidi not installed - Auto Cue relay disabled (pip install python-rtmidi)")
+
+    diag = None
+    if diagnostic:
+        if MidiDiagnostic is None:
+            log.warning("MIDI diagnostic unavailable (pip install python-rtmidi)")
+        else:
+            diag = MidiDiagnostic()
+            if not diag.start():
+                diag = None
 
     stop = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -612,10 +688,19 @@ async def main():
         await stop.wait()
         poll_task.cancel()
 
+    if diag is not None:
+        diag.stop()
+    if relay is not None:
+        relay.stop()
+
     await azc.async_unregister_all_services()
     await azc.async_close()
     log.info("Server stopped.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    if args.help:
+        print(HELP_TEXT)
+        sys.exit(0)
+    asyncio.run(main(diagnostic=args.diagnostic))

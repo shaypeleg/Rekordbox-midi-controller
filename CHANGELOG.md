@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-19
+
+### Fixed - Auto Cue both-channels-on after fast crossfader moves
+
+Fast left↔right swipes could leave both headphone Cues on in Rekordbox
+even though the CYD's local mirror looked correct. Cause: Cue is a Note On
+*toggle*, and a fast swipe fired LEFT → NONE (off) → RIGHT (on) while the
+relay flooded BLE with every crossfader CC — a dropped "off" toggle left
+the previous Cue stuck on.
+
+- Firmware: hysteresis + 50ms debounce before treating the middle as
+  "release Cue"; enter opposite end immediately (skip the off/on pair);
+  always send unwanted Cue off before wanted Cue on.
+- Companion relay: send only zone changes (`0` / `64` / `127`) instead of
+  every MSB update.
+
+### Added - Auto Cue (crossfader-driven headphone monitor)
+
+New **AUTO CUE** toggle on the Deck Controls screen. When enabled, the
+device watches the crossfader position and automatically turns on
+headphone Cue for whichever deck the crossfader has just silenced (full
+left → Deck 2 Cue on, full right → Deck 1 Cue on), turning it back off
+once the fader leaves that end.
+
+This required adding MIDI **receive** support for the first time - every
+other feature in this sketch only sends MIDI. The crossfader lives on the
+DDJ-REV5, not on this device, so Rekordbox has to feed its live position
+back to "RB-MIDI" over BLE MIDI:
+
+- `midi_utils.h`: `lastReceivedCC[]` cache + `handleIncomingMIDIPacket()`,
+  a minimal BLE-MIDI packet parser (no running-status support - not needed
+  for a single feedback CC).
+- `Rekordbox-Midi-Controller.ino`: `MIDIRxCallbacks` (`onWrite`) wired to
+  the existing characteristic (already had `WRITE_NR`), `initMIDIRx()` in
+  `setup()`, `updateAutoCue()` in `loop()` (runs regardless of the active
+  screen, since this is a background safety behaviour).
+- `common_definitions.h`: Auto Cue sends DDJ-REV5 Cue codes `9007` /
+  `9107` (Note 7 on ch1/ch2); `CC_CROSSFADER_FEEDBACK` (46) for the
+  incoming crossfader value - the first *incoming* constant in the file.
+- `deck_controls_mode.h`: edge-triggered zone detection (`XF_ZONE_LEFT` /
+  `XF_ZONE_RIGHT` / `XF_ZONE_NONE`) so Cue notes are sent once per
+  crossing, not on every poll; a live `XFADE:` / Cue-state status line for
+  verifying the mapping; toggle rows shrunk slightly (38px → 30px) to fit
+  the new status line + toggle in the existing 240px screen height.
+
+Rekordbox does not populate MIDI OUT for Knob/Slider functions (including
+CrossFader), so feedback cannot come from Rekordbox. A companion-app
+relay (`crossfader_relay.py`) instead listens to the DDJ-REV5's native
+crossfader MIDI (`B6 1F` MSB, verified live) and forwards CC 46 to
+RB-MIDI Bluetooth. See README → "Auto Cue: crossfader feedback setup".
+
 ## 2026-07-15
 
 ### Added - FX Pad (Rekordbox Combo FX style)

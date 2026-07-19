@@ -15,7 +15,7 @@ Every screen (except the main menu) can be exited via the small chevron (`‹`) 
 - **Main Menu** - jump to any screen below. Two rows of icons: Row 1 performance actions (FX, Pad FX, Decks, Stems, HotCue), Row 2 views (Track, Scroll, Views). Small Bluetooth/WiFi icon badges top-right: blue = BT connected, green = WiFi connected, amber = WiFi connecting, dim gray = off. Setup gear icon in the bottom-right corner.
 - **FX (Effects)** - per-deck FX control with 3 FX slot buttons (FX1/FX2/FX3) and a paddle switch per deck. Tap buttons to arm FX slots, push the paddle to activate all armed slots at once (sends MIDI), pull paddle back to deactivate. Active FX flash to distinguish from merely armed.
 - **FXPAD (Combo FX Pad)** - gated Beat FX + Color FX on an X/Y pad. Setup: arm FX1/FX2/FX3 per deck (same MIDI notes as the Effects screen), cycle Color FX with Prev CFX / Next CFX, then **DECK1** or **DECK2** for that deck only. Pad: finger down turns that deck's armed FX on and drives Level (X) + CFX Parameter (Y); finger up turns FX off and resets CFX to center.
-- **DECKS (Deck Controls)** - Master Tempo, Quantize, Slip Mode, and Vinyl toggles for Deck 1 and Deck 2.
+- **DECKS (Deck Controls)** - Master Tempo, Quantize, Slip Mode, and Vinyl toggles for Deck 1 and Deck 2, plus **AUTO CUE**: when on, the device watches the crossfader position (fed back from Rekordbox - see [Auto Cue: crossfader feedback setup](#auto-cue-crossfader-feedback-setup) below) and automatically enables headphone Cue on whichever deck the crossfader has just silenced, turning it back off once the fader leaves that end.
 - **SCROLL (Song Search)** - two touch strips (one per deck) for needle search position, plus Previous Cue / Next Cue buttons below each strip.
 - **STEMS** - Vocal / Melody / Bass / Drums stem toggles for Deck 1 and Deck 2, plus a **SOLO** toggle per deck: off, tapping a stem just adds/removes it; on, tapping a stem isolates it (mutes the other three), and tapping the isolated stem again restores all four.
 - **VIEWS (RB View)** - toggle Rekordbox UI panels (FX, Sampler, Mixer, Record) on/off, plus a horizontal Wave Zoom slider (CC 0-127).
@@ -37,6 +37,8 @@ This device is a **generic BLE MIDI controller** - it doesn't ship with a Rekord
 | Deck Controls | Deck 2 Slip Mode | Note 25 | Deck 2 `Slip` |
 | Deck Controls | Deck 1 Vinyl | Note 26 | Deck 1 `Vinyl` |
 | Deck Controls | Deck 2 Vinyl | Note 27 | Deck 2 `Vinyl` |
+| Deck Controls | Deck 1 Cue (auto, see below) | `9007` (Note 7, ch1) | Deck 1 headphone `Cue` |
+| Deck Controls | Deck 2 Cue (auto, see below) | `9107` (Note 7, ch2) | Deck 2 headphone `Cue` |
 | Effects | Deck 1 FX1 / FX2 / FX3 | Notes 30, 31, 32 | `FX1-1On`, `FX1-2On`, `FX1-3On` |
 | Effects | Deck 2 FX1 / FX2 / FX3 | Notes 33, 34, 35 | `FX2-1On`, `FX2-2On`, `FX2-3On` |
 | Song Search | Deck 1 strip | CC 40 (0-127) | Deck 1 `NeedleSearch` |
@@ -63,6 +65,20 @@ This device is a **generic BLE MIDI controller** - it doesn't ship with a Rekord
 | FX Pad | CFX Select Back / Next | Notes 95, 94 | `CFX Select Back` / `CFX Select Next` |
 
 **FX Pad gate behaviour:** arm any combo of FX1–3 on each deck on the setup screen (no MIDI yet). Tap **DECK1** or **DECK2** to open the pad for that deck only. While the finger is on the pad, that deck's armed slots toggle On (Notes 30–32 or 33–35) and **X sends LevelDepth to every armed slot** (e.g. FX1+FX2 armed → CC 90 and 91 together). Y drives that deck's CFX Parameter. On release: FX Off, armed LevelDepth → 0, CFX Parameter → 64.
+
+### Auto Cue: crossfader feedback setup
+
+The **AUTO CUE** toggle on the Deck Controls screen needs the crossfader's live position. That fader lives on the DDJ-REV5, and Rekordbox does **not** send continuous fader values back out over MIDI OUT (confirmed: every Knob/Slider row, including CrossFader `B61F`, has an empty MIDI OUT cell). So the CYD never learns the position from Rekordbox itself.
+
+Instead, the companion app includes a small **crossfader relay** (`companion_app/crossfader_relay.py`) that:
+
+1. Listens to the DDJ-REV5's own MIDI (macOS allows multiple apps to read the same port alongside Rekordbox)
+2. Watches for the crossfader MSB: Control Change channel 7, CC 31 (`B6 1F` — verified live)
+3. Forwards a simplified CC channel 1 / CC 46 (`CC_CROSSFADER_FEEDBACK`) to **RB-MIDI Bluetooth**
+
+Requirements: DDJ-REV5 connected, CYD paired as `RB-MIDI`, companion server running (`./run.sh` installs `python-rtmidi` and starts the relay automatically). On the Deck Controls screen the status line should show `XFADE:` updating as you move the fader.
+
+Then flip **AUTO CUE** on: full left → `9107` (Deck 2 Cue); full right → `9007` (Deck 1 Cue); leaving either end turns that Cue off. These match the DDJ-REV5 Cue button Learn codes — map them to each channel's headphone `Cue` if not already covered by your REV5 mapping.
 
 ## What You Need
 
@@ -122,7 +138,9 @@ The **Track Info** screen requires a Python server running on the same machine a
 ### Quick Start
 
 ```bash
-./run.sh
+./run.sh        # Track Info server + crossfader relay
+./run.sh -d     # same, plus live DDJ-REV5 MIDI diagnostic in the terminal
+./run.sh -h     # help / list of functionalities
 ```
 
 Or manually:
@@ -131,6 +149,7 @@ Or manually:
 cd companion_app
 pip install -r requirements.txt
 python3 nowplaying_server.py
+python3 nowplaying_server.py -d
 ```
 
 ### How It Works
@@ -153,6 +172,7 @@ python3 nowplaying_server.py
 - `pyrekordbox` - reads Rekordbox database and analysis files
 - `websockets` - WebSocket server
 - `zeroconf` - mDNS service advertisement for auto-discovery
+- `python-rtmidi` - CoreMIDI access for the Auto Cue crossfader relay
 
 ## Troubleshooting
 

@@ -7,6 +7,7 @@
 #include <XPT2046_Touchscreen.h>
 #include <TFT_eSPI.h>
 #include <NimBLEDevice.h>
+#include <string>
 
 // Include screen files
 #include "wifi_manager.h"
@@ -140,6 +141,18 @@ class MIDICallbacks: public BLEServerCallbacks {
     }
 };
 
+// Receives MIDI written to our characteristic by the central (Rekordbox).
+// Currently only used for the crossfader feedback CC that drives Auto Cue
+// (see deck_controls_mode.h) - everything else this device does is
+// output-only. Runs in the NimBLE host task like the server callbacks
+// above, so it only touches the plain lastReceivedCC[] cache, never SPI/TFT.
+class MIDIRxCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *characteristic, NimBLEConnInfo& connInfo) override {
+      std::string value = characteristic->getValue();
+      handleIncomingMIDIPacket((const uint8_t *)value.data(), value.length());
+    }
+};
+
 // Brightness 0-255 per channel. Active-LOW LED, so duty is inverted.
 void setBackLED(uint8_t r, uint8_t g, uint8_t b) {
   ledcWrite(LED_R_PIN, 255 - r);
@@ -189,6 +202,7 @@ void setup() {
     NIMBLE_PROPERTY::WRITE_NR |
     NIMBLE_PROPERTY::NOTIFY
   );
+  pCharacteristic->setCallbacks(new MIDIRxCallbacks());
   // NimBLE automatically creates the 0x2902 (CCCD) descriptor for
   // characteristics with the NOTIFY property, so no manual BLE2902 needed.
   service->start();
@@ -211,7 +225,9 @@ void setup() {
   
   // WiFi setup - non-blocking, reconnects to any saved network
   initWiFiManager();
-  
+
+  initMIDIRx();
+
   // Initialize screen state
   initializeEffectsMode();
   initializeDeckControlsMode();
@@ -258,6 +274,7 @@ void loop() {
 
   updateTouch();
   updateWiFiManager();
+  updateAutoCue();
 
   if (currentMode == MENU &&
       (wifiConnected != lastWifiConnected ||

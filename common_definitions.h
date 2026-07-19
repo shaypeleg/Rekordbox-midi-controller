@@ -63,6 +63,16 @@ void setBackLED(uint8_t r, uint8_t g, uint8_t b);
 #define NOTE_D1_VINYL        26
 #define NOTE_D2_VINYL        27
 
+// Deck Controls screen - headphone Cue (PFL) toggles. Not tapped directly
+// by the user - driven automatically by the Auto Cue feature (see
+// updateAutoCue() in deck_controls_mode.h) when the crossfader is parked
+// at either end.
+// Sent as Note On note 7 on channel 1 (9007) or channel 2 (9107) to match
+// the DDJ-REV5 Cue button MIDI Learn codes.
+#define NOTE_CUE 7
+#define MIDI_CH_D1_CUE 0x90  // channel 1 → 9007
+#define MIDI_CH_D2_CUE 0x91  // channel 2 → 9107
+
 // Effects screen - Note On/Off
 // Per-deck FX slot toggles: FX1/FX2/FX3 for each deck, plus an
 // independent paddle switch per deck that sends its own MIDI note.
@@ -84,6 +94,15 @@ void setBackLED(uint8_t r, uint8_t g, uint8_t b);
 #define NOTE_CUE_NEXT_D1 43
 #define NOTE_CUE_PREV_D2 44
 #define NOTE_CUE_NEXT_D2 45
+
+// Deck Controls screen - Crossfader position feedback. UNLIKE every other
+// constant in this file, this one is INCOMING (Rekordbox -> device): map
+// the CrossFader function's MIDI OUT (not MIDI IN) to this CC so the
+// device can tell when the fader is parked at either end and drive Auto
+// Cue. Rekordbox's MIDI Learn can't capture this by "operating" a control
+// on this device (there's no physical crossfader here to move) - it has
+// to be added as a row directly in the exported mapping file. See README.
+#define CC_CROSSFADER_FEEDBACK 46
 
 // Stems screen - Note On/Off toggles (Vocal, Melody, Bass, Drums) x2 decks.
 // Note values are unchanged from earlier revisions (only the on-screen
