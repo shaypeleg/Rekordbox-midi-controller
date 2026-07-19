@@ -10,6 +10,10 @@ the DDJ-REV5's crossfader position to the CYD for the Auto Cue feature -
 optional, degrades gracefully if python-rtmidi isn't installed or either
 MIDI device isn't connected.
 
+Live playhead (optional): listens for rkbx_link OSC on UDP 4460 and pushes
+lightweight {"type":"playhead",...} messages at ~25 Hz so the CYD can draw
+a moving needle on the static ANLZ waveform.
+
 Auto-discoverable via mDNS (_rekordbox-cyd._tcp.local on port 9100).
 
 Usage:
@@ -18,7 +22,7 @@ Usage:
     ./run.sh -h           # help
 
 Requires:
-    pip install pyrekordbox websockets zeroconf python-rtmidi
+    pip install pyrekordbox websockets zeroconf python-rtmidi python-osc
 """
 
 import argparse
@@ -46,6 +50,12 @@ try:
 except ImportError:
     MidiDiagnostic = None
 
+try:
+    from rkbx_link_osc import RkbxLinkOscReceiver, build_playhead_decks
+except ImportError:
+    RkbxLinkOscReceiver = None  # type: ignore
+    build_playhead_decks = None  # type: ignore
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s - %(message)s",
@@ -59,6 +69,9 @@ logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
 
 WS_PORT = 9100
 POLL_INTERVAL = 1.0
+PLAYHEAD_INTERVAL = 0.06  # ~16 Hz — needle + zoom window over WiFi
+WAVEFORM_FULL_POINTS = 4096  # Mac-side strip for zoom slicing
+ZOOM_BEATS = 8.0  # visible zoom window width in beats (~4s if no BPM)
 
 AUDIO_EXTENSIONS = (
     ".mp3", ".m4a", ".wav", ".flac", ".aiff", ".aif",
@@ -362,12 +375,12 @@ class DeckTracker:
         return (changed, self.deck_paths[:])
 
 
-def extract_waveform_320(anlz_files) -> Optional[list]:
-    """Extract waveform data downsampled to 320 points for the CYD display.
+def extract_waveform_points(anlz_files, num_points: int) -> Optional[list]:
+    """Extract waveform data downsampled to ``num_points``.
 
     Returns list of [r, g, b, h] where r/g/b are 0-7 and h is 0-31.
     """
-    if not anlz_files:
+    if not anlz_files or num_points <= 0:
         return None
 
     all_tags = []
@@ -380,15 +393,15 @@ def extract_waveform_320(anlz_files) -> Optional[list]:
             try:
                 heights, colors = tag.get()
                 n = len(heights)
-                step_size = max(1, n // CYD_WIDTH)
+                step_size = max(1, n // num_points)
                 wf = []
-                for i in range(0, min(n, CYD_WIDTH * step_size), step_size):
+                for i in range(0, min(n, num_points * step_size), step_size):
                     h = int(heights[i] * 31)
                     r, g, b = int(colors[i][0]), int(colors[i][1]), int(colors[i][2])
                     wf.append([r, g, b, h])
-                while len(wf) < CYD_WIDTH:
+                while len(wf) < num_points:
                     wf.append([0, 0, 0, 0])
-                return wf[:CYD_WIDTH]
+                return wf[:num_points]
             except Exception:
                 continue
 
@@ -398,21 +411,23 @@ def extract_waveform_320(anlz_files) -> Optional[list]:
             try:
                 heights, colors, _ = tag.get()
                 n = len(heights)
-                step_size = max(1, n // CYD_WIDTH)
+                step_size = max(1, n // num_points)
                 max_h = max(1, float(heights.max()))
                 wf = []
-                for i in range(0, min(n, CYD_WIDTH * step_size), step_size):
+                for i in range(0, min(n, num_points * step_size), step_size):
                     h_val = heights[i]
-                    h_norm = int((h_val[0] if hasattr(h_val, '__len__') else h_val) / max_h * 31)
+                    h_norm = int(
+                        (h_val[0] if hasattr(h_val, "__len__") else h_val) / max_h * 31
+                    )
                     c = colors[i]
-                    layer = c[0] if hasattr(c[0], '__len__') else c
+                    layer = c[0] if hasattr(c[0], "__len__") else c
                     r = min(7, int(layer[0] / 20))
                     g = min(7, int(layer[1] / 20))
                     b = min(7, int(layer[2] / 20))
                     wf.append([r, g, b, h_norm])
-                while len(wf) < CYD_WIDTH:
+                while len(wf) < num_points:
                     wf.append([0, 0, 0, 0])
-                return wf[:CYD_WIDTH]
+                return wf[:num_points]
             except Exception:
                 continue
 
@@ -423,22 +438,67 @@ def extract_waveform_320(anlz_files) -> Optional[list]:
                 result = tag.get()
                 heights = result[0] if isinstance(result, tuple) else result
                 n = len(heights)
-                step_size = max(1, n // CYD_WIDTH)
+                step_size = max(1, n // num_points)
                 max_h = max(1, float(max(heights)))
                 wf = []
-                for i in range(0, min(n, CYD_WIDTH * step_size), step_size):
+                for i in range(0, min(n, num_points * step_size), step_size):
                     val = heights[i]
-                    if hasattr(val, '__len__'):
+                    if hasattr(val, "__len__"):
                         val = val[0]
                     h_norm = int(float(val) / max_h * 31)
                     wf.append([0, 4, 7, h_norm])
-                while len(wf) < CYD_WIDTH:
+                while len(wf) < num_points:
                     wf.append([0, 0, 0, 0])
-                return wf[:CYD_WIDTH]
+                return wf[:num_points]
             except Exception:
                 continue
 
     return None
+
+
+def extract_waveform_320(anlz_files) -> Optional[list]:
+    """Overview waveform for the CYD (full track → 320 columns)."""
+    return extract_waveform_points(anlz_files, CYD_WIDTH)
+
+
+def slice_wave_window(
+    full_wf: list,
+    duration_ms: int,
+    position_ms: int,
+    bpm: float,
+    width: int = CYD_WIDTH,
+    beats: float = ZOOM_BEATS,
+) -> list:
+    """
+    Slice a zoomed waveform window centered on ``position_ms``.
+
+    Returns ``width`` columns of [r,g,b,h] for the CYD scrolling zoom view.
+    """
+    if not full_wf or duration_ms <= 0 or width <= 0:
+        return [[0, 0, 0, 0] for _ in range(width)]
+
+    n = len(full_wf)
+    if bpm and bpm > 0:
+        window_ms = max(500.0, (beats * 60_000.0) / bpm)
+    else:
+        window_ms = 4000.0
+    window_ms = min(window_ms, float(duration_ms))
+
+    half = window_ms / 2.0
+    start_ms = float(position_ms) - half
+    out: list = []
+    for x in range(width):
+        t_ms = start_ms + (x + 0.5) * (window_ms / width)
+        if t_ms < 0 or t_ms >= duration_ms:
+            out.append([0, 0, 0, 0])
+            continue
+        idx = int(t_ms * n / duration_ms)
+        if idx < 0:
+            idx = 0
+        elif idx >= n:
+            idx = n - 1
+        out.append(full_wf[idx])
+    return out
 
 
 def extract_hot_cues(content) -> list[dict]:
@@ -464,7 +524,11 @@ def extract_hot_cues(content) -> list[dict]:
 
 
 def build_deck_payload(db, filepath: str, slot: str) -> Optional[dict]:
-    """Build the JSON payload for a single deck."""
+    """Build the JSON payload for a single deck.
+
+    Also returns ``_full_waveform`` (Mac-only, stripped before WebSocket send)
+    used to slice zoom windows for live playhead messages.
+    """
     content = db.get_content().filter_by(FolderPath=filepath).first()
     if content is None:
         return None
@@ -482,11 +546,13 @@ def build_deck_payload(db, filepath: str, slot: str) -> Optional[dict]:
     duration_s = content.Length or 0
     comment = content.Commnt or ""
 
-    # Waveform
+    # Waveform: overview for CYD + high-res strip for zoom slicing
     waveform = None
+    full_waveform = None
     try:
         anlz_files = db.read_anlz_files(content)
         waveform = extract_waveform_320(anlz_files)
+        full_waveform = extract_waveform_points(anlz_files, WAVEFORM_FULL_POINTS)
     except Exception as e:
         log.warning(f"Waveform extraction failed for {slot}: {e}")
 
@@ -502,6 +568,7 @@ def build_deck_payload(db, filepath: str, slot: str) -> Optional[dict]:
         "comment": comment,
         "hot_cues": hot_cues,
         "waveform": waveform,
+        "_full_waveform": full_waveform,
     }
 
 
@@ -511,8 +578,12 @@ class NowPlayingState:
     def __init__(self):
         self.clients: set = set()
         self.tracker = DeckTracker()
-        self.current_payload: str = json.dumps({"decks": []})
+        self.current_payload: str = json.dumps({"type": "track", "decks": []})
         self._db = None
+        self.deck_titles: list[str] = []
+        self.deck_meta: dict[str, dict] = {}  # slot -> duration_ms, bpm, full_wf
+        self._last_playhead_pos: dict[str, int] = {}
+        self.rkbx: Optional[object] = None
 
     def _get_db(self):
         if self._db is None:
@@ -543,6 +614,66 @@ class NowPlayingState:
                 disconnected.add(ws)
         self.clients -= disconnected
 
+    def _merge_playhead_into_decks(self, decks: list[dict]) -> None:
+        """Attach position_ms from rkbx_link when available (full track msgs)."""
+        if self.rkbx is None or build_playhead_decks is None:
+            return
+        titles = [d.get("title", "") for d in decks]
+        for entry in build_playhead_decks(titles, self.rkbx.state):
+            for deck in decks:
+                if deck.get("slot") == entry["slot"]:
+                    deck["position_ms"] = entry["position_ms"]
+
+    def _attach_wave_windows(self, decks: list[dict]) -> None:
+        """Add zoomed wave_window columns centered on each deck's playhead."""
+        for entry in decks:
+            slot = entry.get("slot")
+            meta = self.deck_meta.get(slot or "")
+            if not meta or not meta.get("full_wf"):
+                continue
+            bpm = float(entry.get("bpm") or meta.get("bpm") or 0.0)
+            entry["wave_window"] = slice_wave_window(
+                meta["full_wf"],
+                int(meta["duration_ms"]),
+                int(entry["position_ms"]),
+                bpm,
+            )
+
+    async def broadcast_playhead(self):
+        """Push playhead + zoom window if position moved enough to matter."""
+        if (
+            self.rkbx is None
+            or not getattr(self.rkbx, "available", False)
+            or build_playhead_decks is None
+            or not self.deck_titles
+            or not self.clients
+        ):
+            return
+
+        decks = build_playhead_decks(self.deck_titles, self.rkbx.state)
+        if not decks:
+            return
+
+        # Skip broadcast if nothing moved by at least ~1 zoom-pixel (~window/320)
+        moved = False
+        for entry in decks:
+            slot = entry["slot"]
+            pos = int(entry["position_ms"])
+            prev = self._last_playhead_pos.get(slot)
+            meta = self.deck_meta.get(slot) or {}
+            bpm = float(entry.get("bpm") or meta.get("bpm") or 120.0)
+            window_ms = max(500.0, (ZOOM_BEATS * 60_000.0) / bpm)
+            min_delta = max(8, int(window_ms / CYD_WIDTH))
+            if prev is None or abs(pos - prev) >= min_delta:
+                moved = True
+            self._last_playhead_pos[slot] = pos
+        if not moved:
+            return
+
+        self._attach_wave_windows(decks)
+        payload = json.dumps({"type": "playhead", "decks": decks})
+        await self.broadcast(payload)
+
     async def poll_once(self):
         """Check for track changes and broadcast if needed."""
         entries = get_all_rekordbox_audio_fds()
@@ -555,20 +686,34 @@ class NowPlayingState:
 
         active_paths = [p for p in deck_paths if p is not None]
         if not active_paths:
-            self.current_payload = json.dumps({"decks": []})
+            self.deck_titles = []
+            self.deck_meta = {}
+            self._last_playhead_pos = {}
+            self.current_payload = json.dumps({"type": "track", "decks": []})
             await self.broadcast(self.current_payload)
             return
 
         db = self._get_db()
         decks = []
+        meta: dict[str, dict] = {}
         for i, fp in enumerate(active_paths):
             slot = chr(65 + i)
             deck = build_deck_payload(db, fp, slot)
             if deck:
+                full_wf = deck.pop("_full_waveform", None)
+                meta[slot] = {
+                    "full_wf": full_wf,
+                    "duration_ms": int(deck.get("duration_s") or 0) * 1000,
+                    "bpm": float(deck.get("bpm") or 0.0),
+                }
                 decks.append(deck)
                 log.info(f"  Deck {slot}: {deck['title']} - {deck['artist']}")
 
-        self.current_payload = json.dumps({"decks": decks})
+        self.deck_meta = meta
+        self.deck_titles = [d["title"] for d in decks]
+        self._last_playhead_pos = {}
+        self._merge_playhead_into_decks(decks)
+        self.current_payload = json.dumps({"type": "track", "decks": decks})
         await self.broadcast(self.current_payload)
 
 
@@ -598,6 +743,17 @@ async def poll_loop():
         await asyncio.sleep(POLL_INTERVAL)
 
 
+async def playhead_loop():
+    """Push live playhead positions from rkbx_link at ~25 Hz."""
+    log.info(f"Playhead broadcast every {PLAYHEAD_INTERVAL * 1000:.0f}ms...")
+    while True:
+        try:
+            await state.broadcast_playhead()
+        except Exception as e:
+            log.error(f"Playhead broadcast error: {e}")
+        await asyncio.sleep(PLAYHEAD_INTERVAL)
+
+
 async def start_mdns(ip: str, port: int):
     """Register the service via mDNS for auto-discovery."""
     from zeroconf.asyncio import AsyncZeroconf
@@ -623,11 +779,21 @@ CYD companion app — Track Info server + Auto Cue crossfader relay.
 Usage:
   ./run.sh              Start normally
   ./run.sh -d           Start with DDJ-REV5 MIDI diagnostic (prints controls)
+  ./run.sh -resign      macOS one-time: re-sign Rekordbox for live playhead
+  ./run.sh -stop        Kill background rkbx_link / BeatKeeper
+  ./run.sh --no-rkbx    Skip rkbx_link (static waveform only)
   ./run.sh -h           Show this help
 
 What runs by default:
   Track Info WebSocket   Port 9100, mDNS auto-discovery for the CYD
   Crossfader relay       DDJ-REV5 CrossFader (B6 1F) → RB-MIDI CC 46 (Auto Cue)
+  rkbx_link OSC ingest   UDP 4460 → live playhead (if rkbx_link is running)
+
+Live playhead:
+  Prefer ./run.sh — it vendors + starts rkbx_link automatically.
+  On macOS, run ./run.sh -resign once before the first live-playhead session.
+  Manual: OSC to 127.0.0.1:4460 with osc.msg.n/time true
+  (see companion_app/rkbx_link.config.example).
 
 With -d (diagnostic):
   Also listens to the DDJ-REV5 MIDI port and prints every button / knob /
@@ -668,6 +834,13 @@ async def main(diagnostic: bool = False):
     elif relay is None:
         log.warning("python-rtmidi not installed - Auto Cue relay disabled (pip install python-rtmidi)")
 
+    if RkbxLinkOscReceiver is not None:
+        state.rkbx = RkbxLinkOscReceiver()
+        if not await state.rkbx.start():
+            state.rkbx = None
+    else:
+        log.warning("rkbx_link_osc unavailable - live playhead disabled")
+
     diag = None
     if diagnostic:
         if MidiDiagnostic is None:
@@ -685,13 +858,17 @@ async def main(diagnostic: bool = False):
     async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT):
         log.info(f"WebSocket server listening on ws://0.0.0.0:{WS_PORT}")
         poll_task = asyncio.create_task(poll_loop())
+        playhead_task = asyncio.create_task(playhead_loop())
         await stop.wait()
         poll_task.cancel()
+        playhead_task.cancel()
 
     if diag is not None:
         diag.stop()
     if relay is not None:
         relay.stop()
+    if state.rkbx is not None:
+        state.rkbx.stop()
 
     await azc.async_unregister_all_services()
     await azc.async_close()

@@ -4,9 +4,20 @@
 
 - [ ] Flash and MIDI-Learn test PAD FX: arm FX1-3, CFX Next/Back,
   MAP sliders for LevelDepth + CFX Parameter; then remove MAP helpers
+- [ ] End-to-end test live playhead + zoom scroll: rkbx_link + companion +
+  CYD TRACK expanded (jog / hotcue / pause); confirm yellow needle + scroll
 
 ## Completed
 
+- [x] 2026-07-19 — Live playhead via rkbx_link OSC: companion ingests
+  `/N/time` on UDP 4460 and pushes `{"type":"playhead"}` at ~25 Hz;
+  CYD TRACK draws a white needle on the ANLZ waveform without full redraws.
+- [x] 2026-07-19 — `./run.sh` auto-vendors + launches rkbx_link
+  (`ensure_rkbx_link.sh`, gitignored `.vendor/`, `--no-rkbx` escape hatch).
+- [x] 2026-07-20 — `./run.sh -resign` wraps upstream resign_rekordbox.sh
+  (macOS get-task-allow one-time setup).
+- [x] 2026-07-20 — Menu split: LIVE VIEW (zoom), TRACK (comments),
+  SCREENS (was VIEWS / RB VIEW → RB SCREENS).
 - [x] 2026-07-19 — Auto Cue: Deck Controls toggle that auto-enables
   headphone Cue for whichever deck the crossfader has just silenced.
   Added MIDI receive support (BLE onWrite + packet parser) so the device
@@ -21,6 +32,11 @@
 
 ## Discovered During Work
 
+- macOS rkbx_link community offsets only cover Rekordbox **7.2.8**.
+  On 7.2.16: task port OK, then `Read memory failed: mach error: 1` —
+  no OSC `/N/time`, CYD shows "No live playhead". See rkbx_link#55.
+- Live playhead is not available over MIDI OUT or Pro DJ Link with a
+  DDJ-REV5 in Performance Mode. Use rkbx_link (memory → OSC) instead.
 - Rekordbox cannot direct-select Beat FX or CFX type via MIDI Learn — only
   CFX Select Next/Back and FX slot On toggles.
 - Sound Color / CFX Parameter must reset to MIDI value **64** on finger-up.

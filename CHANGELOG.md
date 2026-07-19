@@ -2,7 +2,49 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-07-20
+
+### Changed - Menu: LIVE VIEW, TRACK, SCROLL, SCREENS
+
+Bottom row is now **LIVE VIEW** (zoomed playhead), **TRACK** (classic
+now-playing + comments), **SCROLL**, **SCREENS** (was VIEWS / RB VIEW;
+header is "RB SCREENS"). Zoom/playhead UI lives only under LIVE VIEW;
+TRACK restores the previous comment-focused layout.
+
 ## 2026-07-19
+
+### Added - Zoomed scrolling waveform (expanded TRACK)
+
+Expanded Track Info now shows a **CDJ-style zoom**: ~8 beats of waveform
+scroll under a fixed center needle, with a thin full-track overview strip
+below. The companion slices a high-res ANLZ strip (`wave_window`) into each
+playhead message. Compact view keeps the overview with a high-contrast
+yellow needle (was easy to miss as a single white pixel). Shows
+"No live playhead" when rkbx_link position is unavailable.
+
+### Added - Live playhead needle (rkbx_link OSC)
+
+Track Info can now show a **live playhead** on the color waveform while
+playing, jogging, or jumping hot cues. Rekordbox Performance Mode does not
+expose position over MIDI or Pro DJ Link on a DDJ-REV5, so the companion
+reads transport from [rkbx_link](https://github.com/grufkork/rkbx_link)
+(memory → OSC) instead.
+
+- `./run.sh` vendors upstream rkbx_link (GPL-3.0) into
+  `companion_app/.vendor/rkbx_link`, downloads the release binary (or builds
+  with Cargo), writes a CYD OSC config, and starts it in the background.
+  Use `--no-rkbx` to skip; `./run.sh -resign` runs the macOS one-time
+  Rekordbox re-sign for memory access.
+- `companion_app/scripts/ensure_rkbx_link.sh`: clone / binary / config helper.
+- `companion_app/rkbx_link_osc.py`: Async OSC receiver on `127.0.0.1:4460`
+  for `/N/time`, `/N/bpm/current`, `/N/track/{title,artist}`; title-based
+  deck matching with 1→A / 2→B fallback.
+- `nowplaying_server.py`: merges `position_ms` into full track payloads and
+  broadcasts lightweight `{"type":"playhead","decks":[...]}` at ~25 Hz.
+- `track_info_mode.h`: parses playhead messages and redraws only the needle
+  column (white vertical line) without resending or redrawing the whole
+  waveform.
+- Degrades gracefully when rkbx_link / python-osc is absent (static waveform).
 
 ### Fixed - Auto Cue both-channels-on after fast crossfader moves
 

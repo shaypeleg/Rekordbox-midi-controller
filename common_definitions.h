@@ -195,7 +195,8 @@ enum AppMode {
   STEMS,
   RB_VIEW,
   HOT_CUE,
-  TRACK_INFO,
+  TRACK_INFO,   // classic now-playing + comments
+  LIVE_VIEW,    // zoomed scrolling waveform / playhead
   FX_PAD,
   SETUP
 };

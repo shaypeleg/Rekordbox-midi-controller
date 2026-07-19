@@ -12,15 +12,16 @@ This started as an attempt to use the CYD as a live waveform display for a DDJ-R
 
 Every screen (except the main menu) can be exited via the small chevron (`‹`) in the top-left corner - it jumps straight back to the main menu, no matter how deep you are (e.g. from the WiFi password keyboard).
 
-- **Main Menu** - jump to any screen below. Two rows of icons: Row 1 performance actions (FX, Pad FX, Decks, Stems, HotCue), Row 2 views (Track, Scroll, Views). Small Bluetooth/WiFi icon badges top-right: blue = BT connected, green = WiFi connected, amber = WiFi connecting, dim gray = off. Setup gear icon in the bottom-right corner.
+- **Main Menu** - Row 1: FX, Pad FX, Decks, Stems, HotCue. Row 2: Live View, Track, Scroll, Screens. Bluetooth/WiFi badges top-right; Setup gear bottom-right.
 - **FX (Effects)** - per-deck FX control with 3 FX slot buttons (FX1/FX2/FX3) and a paddle switch per deck. Tap buttons to arm FX slots, push the paddle to activate all armed slots at once (sends MIDI), pull paddle back to deactivate. Active FX flash to distinguish from merely armed.
 - **FXPAD (Combo FX Pad)** - gated Beat FX + Color FX on an X/Y pad. Setup: arm FX1/FX2/FX3 per deck (same MIDI notes as the Effects screen), cycle Color FX with Prev CFX / Next CFX, then **DECK1** or **DECK2** for that deck only. Pad: finger down turns that deck's armed FX on and drives Level (X) + CFX Parameter (Y); finger up turns FX off and resets CFX to center.
 - **DECKS (Deck Controls)** - Master Tempo, Quantize, Slip Mode, and Vinyl toggles for Deck 1 and Deck 2, plus **AUTO CUE**: when on, the device watches the crossfader position (fed back from Rekordbox - see [Auto Cue: crossfader feedback setup](#auto-cue-crossfader-feedback-setup) below) and automatically enables headphone Cue on whichever deck the crossfader has just silenced, turning it back off once the fader leaves that end.
-- **SCROLL (Song Search)** - two touch strips (one per deck) for needle search position, plus Previous Cue / Next Cue buttons below each strip.
 - **STEMS** - Vocal / Melody / Bass / Drums stem toggles for Deck 1 and Deck 2, plus a **SOLO** toggle per deck: off, tapping a stem just adds/removes it; on, tapping a stem isolates it (mutes the other three), and tapping the isolated stem again restores all four.
-- **VIEWS (RB View)** - toggle Rekordbox UI panels (FX, Sampler, Mixer, Record) on/off, plus a horizontal Wave Zoom slider (CC 0-127).
 - **HOTCUE (Hot Cue)** - 8 hot cue trigger pads per deck (2 rows of 4), color-coded to match Rekordbox's default pad colors. Buttons are gated (Note On when pressed, Note Off when released) matching DDJ-REV5 behavior. Entering this screen sends two MIDI signals so you can map Rekordbox to auto-switch to Hot Cue pad mode and/or change the screen view.
-- **TRACK (Track Info)** - real-time now-playing display showing per-deck title, BPM, key, duration, comment, color waveform with hot cue markers and legend. Requires the companion Python server on the same network. Two view modes: compact (both decks at once) and expanded (tap a deck for full-screen detail with scrolling title marquee). Swap A/B button to correct deck assignment.
+- **LIVE VIEW** - zoomed scrolling waveform (~8 beats) with fixed center needle + overview strip (needs rkbx_link for playhead). Tap a deck to expand.
+- **TRACK** - classic now-playing: both decks with color waveform, hot cues, and comments; tap a deck for tall overview + cue legend + large comment.
+- **SCROLL (Song Search)** - two touch strips (one per deck) for needle search position, plus Previous Cue / Next Cue buttons below each strip.
+- **SCREENS (RB SCREENS)** - toggle Rekordbox UI panels (FX, Sampler, Mixer, Record) on/off, plus a horizontal Wave Zoom slider (CC 0-127).
 - **SETUP** - Bluetooth status + restart advertising, WiFi scan/connect with an on-screen keyboard for entering the password (credentials saved on-device and reconnected automatically on boot), LED brightness control, and a **DARK/LIGHT** display toggle (saved on-device, applies instantly to every screen).
 
 ## Mapping controls in Rekordbox
@@ -138,12 +139,21 @@ The **Track Info** screen requires a Python server running on the same machine a
 ### Quick Start
 
 ```bash
-./run.sh        # Track Info server + crossfader relay
-./run.sh -d     # same, plus live DDJ-REV5 MIDI diagnostic in the terminal
-./run.sh -h     # help / list of functionalities
+./run.sh           # rkbx_link (live playhead) + Track Info server + crossfader relay
+./run.sh -d        # same, plus live DDJ-REV5 MIDI diagnostic in the terminal
+./run.sh --no-rkbx # skip rkbx_link (static waveform only)
+./run.sh -resign   # macOS one-time: re-sign Rekordbox for live playhead memory access
+./run.sh -stop     # kill background rkbx_link / BeatKeeper (use if Ctrl+C left it running)
+./run.sh -h        # help / list of functionalities
 ```
 
-Or manually:
+`./run.sh` automatically:
+1. Clones [rkbx_link](https://github.com/grufkork/rkbx_link) (GPL-3.0) into `companion_app/.vendor/rkbx_link`
+2. Downloads the release binary (or builds with Cargo if present)
+3. Writes a CYD-tuned OSC config and starts rkbx_link in the background
+4. Starts the Python Track Info / crossfader companion
+
+Or run the Python server alone:
 
 ```bash
 cd companion_app
@@ -159,6 +169,24 @@ python3 nowplaying_server.py -d
 3. Metadata (title, BPM, key, cues, waveform) is read from Rekordbox's ANLZ files via `pyrekordbox`
 4. Data is pushed to all connected CYD clients over WebSocket (port 9100)
 5. The CYD discovers the server automatically via mDNS (`_rekordbox-cyd._tcp.local`) - zero configuration
+6. **Optional live playhead:** if [rkbx_link](https://github.com/grufkork/rkbx_link) is running, the companion listens for OSC on `127.0.0.1:4460` and pushes lightweight `{"type":"playhead"}` messages (~25 Hz) so the CYD can move a white needle on the static waveform (jogs, hot cues, loops included — read from Rekordbox memory, not estimated from MIDI)
+
+### Live playhead (rkbx_link, auto-started)
+
+Rekordbox Performance Mode does not expose playhead over MIDI or Pro DJ Link on a DDJ-REV5. [rkbx_link](https://github.com/grufkork/rkbx_link) (GPL-3.0) reads transport from Rekordbox memory and exports OSC; `./run.sh` vendors and launches it for you.
+
+**macOS one-time setup** (required for memory access without disabling SIP):
+
+```bash
+# Quit Rekordbox first, then:
+./run.sh -resign
+```
+
+That vendors rkbx_link if needed and runs its re-sign script (adds `get-task-allow`). Then start Rekordbox → `./run.sh` (may prompt for sudo) → open **LIVE VIEW** on the CYD (needs Rekordbox 7.2.8 on macOS for playhead).
+
+- **macOS live playhead only works with Rekordbox 7.2.8** — that is the only version with community memory offsets in rkbx_link. Newer installs (e.g. 7.2.14 / 7.2.16) get task access but fail memory reads → CYD shows "No live playhead". Track metadata/waveform still work. See [rkbx_link#55](https://github.com/grufkork/rkbx_link/issues/55).
+- Use `./run.sh --no-rkbx` for static waveform only
+- Upstream license is GPL-3.0; it lives under `companion_app/.vendor/` (gitignored), not under this project's MIT code
 
 ### Requirements
 
@@ -166,6 +194,7 @@ python3 nowplaying_server.py -d
 - macOS (uses `lsof` for file descriptor monitoring)
 - Rekordbox must be running with tracks loaded
 - CYD and server must be on the same WiFi network
+- For live playhead: rkbx_link running locally with OSC enabled
 
 ### Dependencies
 
@@ -173,6 +202,7 @@ python3 nowplaying_server.py -d
 - `websockets` - WebSocket server
 - `zeroconf` - mDNS service advertisement for auto-discovery
 - `python-rtmidi` - CoreMIDI access for the Auto Cue crossfader relay
+- `python-osc` - rkbx_link OSC ingest for live playhead
 
 ## Troubleshooting
 
@@ -184,6 +214,7 @@ python3 nowplaying_server.py -d
 - **WiFi won't connect**: Use "FORGET NETWORK" on the Setup screen and try scanning again
 - **Track Info shows "Searching..."**: Ensure the companion server is running, both devices are on the same WiFi, and mDNS is not blocked by your router
 - **Track Info wrong deck assignment**: Tap the swap (↑↓) button in the top-right corner. The server's initial deck guess may be wrong when starting with cached files - it self-corrects on the first track load
+- **No live playhead / "No live playhead" on CYD**: Almost always a Rekordbox **version mismatch** on Mac. Check `mdls -name kMDItemVersion "/Applications/rekordbox 7/rekordbox.app"` — if it is not **7.2.8**, rkbx_link cannot read playhead (log shows `Read memory failed: mach error: 1`). Also confirm `./run.sh -resign` was done once, and `rkbx_link.log` is not only retrying `...`.
 
 ## License
 

@@ -1,0 +1,40 @@
+# CYD companion writes this automatically into
+# companion_app/.vendor/rkbx_link/config when you run ./run.sh.
+# Kept here as a reference / for manual rkbx_link runs.
+#
+# Upstream: https://github.com/grufkork/rkbx_link (GPL-3.0)
+# Note: OSC message toggles use a slash: osc.msg.n/time (not osc.msg.n.time)
+
+app.licensekey evaluation
+app.auto_update false
+app.debug false
+app.yes_to_all true
+
+keeper.rekordbox_version 7.2.8
+keeper.update_rate 60
+keeper.slow_update_every_nth 10
+keeper.delay_compensation 0
+keeper.keep_warm true
+keeper.decks 2
+
+display.enabled false
+link.enabled false
+
+osc.enabled true
+osc.source 127.0.0.1:4450
+osc.destination 127.0.0.1:4460
+osc.send_every_nth 2
+
+# Required for the CYD needle
+osc.msg.n/time true
+osc.msg.master/time false
+osc.msg.n/phrase false
+osc.msg.master/phrase false
+osc.msg.master/beat/subdiv
+osc.msg.master/beat/trigger
+osc.msg.n/beat/subdiv
+osc.msg.n/beat/trigger
+
+file.enabled false
+setlist.enabled false
+sacn.enabled false

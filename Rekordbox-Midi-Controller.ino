@@ -80,13 +80,14 @@ AppIcon apps[] = {
   {"DECKS", 0x07E0, DECK_CONTROLS},   // Green
   {"STEMS", 0x781F, STEMS},            // Purple
   {"HOTCUE", 0xF81F, HOT_CUE},        // Magenta
-  // Row 2 - views / display
-  {"TRACK", 0x07FF, TRACK_INFO},       // Cyan - Now Playing
+  // Row 2 - display / navigation
+  {"LIVE VIEW", 0xFFE0, LIVE_VIEW},    // Yellow - zoomed scrolling waveform
+  {"TRACK", 0x07FF, TRACK_INFO},       // Cyan - now-playing + comments
   {"SCROLL", 0x001F, NEEDLE_SEARCH},   // Blue - Waveform Scroll
-  {"VIEWS", 0xFDA0, RB_VIEW},          // Orange
+  {"SCREENS", 0xFDA0, RB_VIEW},        // Orange - RB Screens
 };
 
-int numApps = 8;
+int numApps = 9;
 
 // Small settings shortcut, bottom-right of the menu. Sized smaller than the
 // main function icons (it's a secondary, infrequent action) but still a
@@ -235,6 +236,7 @@ void setup() {
   initializeStemsMode();
   initializeRbViewMode();
   initializeHotCueMode();
+  // TRACK / LIVE VIEW share WS state; style is set again in enterMode()
   initializeTrackInfoMode();
   initializeFxPadMode();
   initializeSetupMode();
@@ -310,6 +312,9 @@ void loop() {
       break;
     case TRACK_INFO:
       handleTrackInfoMode();
+      break;
+    case LIVE_VIEW:
+      handleLiveViewMode();
       break;
     case FX_PAD:
       handleFxPadMode();
@@ -455,15 +460,24 @@ void drawAppGraphics(AppMode mode, int x, int y, int iconSize) {
             tft.fillRect(ox + c * (padS + padG), oy + r * (padS + padG), padS, padS, THEME_BG);
       }
       break;
-    case TRACK_INFO: // waveform with note
+    case TRACK_INFO: // waveform + comment lines
       {
-        tft.drawFastHLine(centerX - 12, centerY, 24, THEME_BG);
+        tft.drawFastHLine(centerX - 12, centerY - 4, 24, THEME_BG);
         for (int i = 0; i < 5; i++) {
-          int bh = 3 + (i % 3) * 3;
-          tft.drawFastVLine(centerX - 10 + i * 5, centerY - bh, bh * 2, THEME_BG);
+          int bh = 2 + (i % 3) * 2;
+          tft.drawFastVLine(centerX - 10 + i * 5, centerY - 4 - bh, bh * 2, THEME_BG);
         }
-        tft.fillCircle(centerX + 8, centerY + 6, 3, THEME_BG);
-        tft.drawFastVLine(centerX + 11, centerY - 6, 12, THEME_BG);
+        tft.drawFastHLine(centerX - 10, centerY + 8, 20, THEME_BG);
+        tft.drawFastHLine(centerX - 10, centerY + 12, 14, THEME_BG);
+      }
+      break;
+    case LIVE_VIEW: // scrolling wave with fixed center needle
+      {
+        for (int i = 0; i < 7; i++) {
+          int bh = 4 + ((i * 3) % 8);
+          tft.drawFastVLine(centerX - 12 + i * 4, centerY - bh / 2, bh, THEME_BG);
+        }
+        tft.drawFastVLine(centerX, centerY - 12, 24, THEME_BG);
       }
       break;
     case FX_PAD: // X/Y crosshair pad
@@ -517,7 +531,12 @@ void enterMode(AppMode mode) {
       drawHotCueMode();
       break;
     case TRACK_INFO:
+      initializeTrackInfoMode();
       drawTrackInfoMode();
+      break;
+    case LIVE_VIEW:
+      initializeLiveViewMode();
+      drawLiveViewMode();
       break;
     case FX_PAD:
       initializeFxPadMode();

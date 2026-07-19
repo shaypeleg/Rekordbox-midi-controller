@@ -52,7 +52,7 @@ void initializeRbViewMode() {
 
 void drawRbViewMode() {
   tft.fillScreen(THEME_BG);
-  drawHeader("RB VIEW");
+  drawHeader("RB SCREENS");
 
   // Row 1: FX Panel, Sampler Panel
   drawToggleButton(RBV_COL1_X, RBV_ROW1_Y, RBV_COL_W, RBV_BTN_H,

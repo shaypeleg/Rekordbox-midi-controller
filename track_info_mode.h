@@ -14,11 +14,14 @@ using namespace websockets;
 #define TI_CONTENT_Y     48
 #define TI_META_H        16
 #define TI_WF_H          42
-#define TI_WF_H_EXPANDED 72
+#define TI_WF_H_EXPANDED 80
+#define TI_WF_H_OVERVIEW 18
 #define TI_CUE_BOX_W    12
 #define TI_CUE_BOX_H    10
 #define TI_MAX_CUES       8
 #define TI_WS_RECONNECT_MS 3000
+#define TI_NEEDLE_COLOR  0xFFE0  // bright yellow — visible on any waveform color
+#define TI_NEEDLE_EDGE   TFT_BLACK
 
 // Title scroll animation (ping-pong marquee for long titles)
 #define TI_SCROLL_STEP_MS   50
@@ -42,6 +45,8 @@ struct TrackDeck {
   } cues[TI_MAX_CUES];
   uint8_t waveform[320][4];  // [r, g, b, h] per pixel column
   bool hasWaveform;
+  uint32_t position_ms;  // live playhead from rkbx_link (0 if unknown)
+  bool hasPosition;
 };
 
 // Module state
@@ -54,8 +59,22 @@ static unsigned long tiLastReconnect = 0;
 static bool tiDataReceived = false;
 static TrackDeck tiDecks[2];
 
+// Which menu entry opened this module: classic TRACK vs LIVE VIEW zoom
+enum TiUiStyle { TI_UI_TRACK = 0, TI_UI_LIVE = 1 };
+static TiUiStyle tiUiStyle = TI_UI_TRACK;
+
 // View state: -1 = compact (both decks), 0 = deck A expanded, 1 = deck B expanded
 static int tiExpandedDeck = -1;
+
+// Live playhead / zoom (updated by lightweight {"type":"playhead"} WS msgs)
+static int tiWfY[2] = {0, 0};
+static int tiWfH[2] = {0, 0};
+static int tiOverviewY[2] = {0, 0};
+static int tiPlayheadX[2] = {-1, -1};
+static bool tiPlayheadDirty = false;
+static uint8_t tiZoomWindow[2][320][4];  // scrolling zoom strip from companion
+static bool tiHasZoomWindow[2] = {false, false};
+static int tiElapsedLabelY = 0;
 
 // Swap button: lets user correct A/B deck assignment when detection is wrong
 #define TI_SWAP_BTN_X  288
@@ -212,6 +231,13 @@ static void tiConnect() {
   tiWsClient.connect(url);
 }
 
+static int tiSlotToIndex(const char* slot) {
+  if (!slot || !slot[0]) return -1;
+  if (slot[0] == 'A' || slot[0] == 'a') return 0;
+  if (slot[0] == 'B' || slot[0] == 'b') return 1;
+  return -1;
+}
+
 static void tiParseDeck(JsonObject deckObj, int idx) {
   TrackDeck& d = tiDecks[idx];
   d.title = deckObj["title"].as<String>();
@@ -220,6 +246,14 @@ static void tiParseDeck(JsonObject deckObj, int idx) {
   d.key = deckObj["key"].as<String>();
   d.duration_s = deckObj["duration_s"] | 0;
   d.comment = deckObj["comment"].as<String>();
+
+  if (deckObj["position_ms"].isNull()) {
+    d.hasPosition = false;
+    d.position_ms = 0;
+  } else {
+    d.position_ms = deckObj["position_ms"] | 0;
+    d.hasPosition = true;
+  }
 
   JsonArray cuesArr = deckObj["hot_cues"];
   d.numCues = 0;
@@ -262,22 +296,77 @@ static void tiParseDeck(JsonObject deckObj, int idx) {
   }
 }
 
+static void tiParseWaveWindow(JsonObject deckObj, int idx) {
+  JsonArray ww = deckObj["wave_window"];
+  if (ww.isNull() || ww.size() == 0) {
+    tiHasZoomWindow[idx] = false;
+    return;
+  }
+  tiHasZoomWindow[idx] = true;
+  int col = 0;
+  for (JsonArray pt : ww) {
+    if (col >= 320) break;
+    tiZoomWindow[idx][col][0] = pt[0] | 0;
+    tiZoomWindow[idx][col][1] = pt[1] | 0;
+    tiZoomWindow[idx][col][2] = pt[2] | 0;
+    tiZoomWindow[idx][col][3] = pt[3] | 0;
+    col++;
+  }
+  for (; col < 320; col++) {
+    tiZoomWindow[idx][col][0] = 0;
+    tiZoomWindow[idx][col][1] = 0;
+    tiZoomWindow[idx][col][2] = 0;
+    tiZoomWindow[idx][col][3] = 0;
+  }
+}
+
+static void tiParsePlayheadMessage(JsonArray decks) {
+  int i = 0;
+  for (JsonObject deckObj : decks) {
+    int idx = tiSlotToIndex(deckObj["slot"]);
+    if (idx < 0) idx = i;  // fallback: array order A, B
+    if (idx < 0 || idx >= 2) {
+      i++;
+      continue;
+    }
+    tiDecks[idx].position_ms = deckObj["position_ms"] | 0;
+    tiDecks[idx].hasPosition = true;
+    if (!deckObj["bpm"].isNull()) {
+      tiDecks[idx].bpm = deckObj["bpm"] | tiDecks[idx].bpm;
+    }
+    tiParseWaveWindow(deckObj, idx);
+    i++;
+  }
+  tiPlayheadDirty = true;
+}
+
 static void tiOnMessage(WebsocketsMessage msg) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, msg.data());
   if (err) return;
 
+  const char* msgType = doc["type"] | "track";
   JsonArray decks = doc["decks"];
+
+  // Lightweight playhead-only updates — do not rebuild the whole screen
+  if (msgType && strcmp(msgType, "playhead") == 0) {
+    tiParsePlayheadMessage(decks);
+    return;
+  }
+
   int idx = 0;
   for (JsonObject deckObj : decks) {
     if (idx >= 2) break;
     tiParseDeck(deckObj, idx);
+    tiPlayheadX[idx] = -1;
     idx++;
   }
   for (; idx < 2; idx++) {
     tiDecks[idx].title = "";
     tiDecks[idx].hasWaveform = false;
+    tiDecks[idx].hasPosition = false;
     tiDecks[idx].numCues = 0;
+    tiPlayheadX[idx] = -1;
   }
   tiDataReceived = true;
 }
@@ -320,6 +409,177 @@ static void tiDrawCueMarkers(TrackDeck& d, int wfY, int wfH) {
     tft.drawChar(d.cues[i].letter, xPos + 3, wfY + 1, 1);
     tft.drawFastVLine(xPos + TI_CUE_BOX_W / 2, wfY + TI_CUE_BOX_H,
                       wfH - TI_CUE_BOX_H, d.cues[i].color565);
+  }
+}
+
+// Map position_ms → overview waveform X (0..319)
+static int tiPositionToX(TrackDeck& d) {
+  if (!d.hasPosition || d.duration_s <= 0) return -1;
+  long denom = (long)d.duration_s * 1000L;
+  if (denom <= 0) return -1;
+  int xPos = (int)((long)d.position_ms * 320L / denom);
+  if (xPos < 0) xPos = 0;
+  if (xPos > 319) xPos = 319;
+  return xPos;
+}
+
+// High-contrast needle (yellow core + black edges) — readable on any waveform
+static void tiDrawNeedleLine(int x, int y, int h) {
+  if (x < 0 || x > 319 || h <= 0) return;
+  if (x > 0) tft.drawFastVLine(x - 1, y, h, TI_NEEDLE_EDGE);
+  tft.drawFastVLine(x, y, h, TI_NEEDLE_COLOR);
+  if (x < 319) tft.drawFastVLine(x + 1, y, h, TI_NEEDLE_EDGE);
+}
+
+static void tiRestoreWaveformColumn(TrackDeck& d, int x, int wfY, int wfH) {
+  if (x < 0 || x > 319) return;
+  for (int dx = -1; dx <= 1; dx++) {
+    int cx = x + dx;
+    if (cx < 0 || cx > 319) continue;
+    tft.drawFastVLine(cx, wfY, wfH, THEME_BG);
+    if (d.hasWaveform) {
+      uint8_t hh = d.waveform[cx][3];
+      if (hh > 0) {
+        uint16_t color = rgb3to565(d.waveform[cx][0], d.waveform[cx][1], d.waveform[cx][2]);
+        int barH = (hh * wfH) / 31;
+        int midY = wfY + wfH / 2;
+        tft.drawFastVLine(cx, midY - barH / 2, barH, color);
+      }
+    }
+  }
+  if (d.duration_s <= 0) return;
+  for (int i = 0; i < d.numCues; i++) {
+    int cueX = (int)((long)d.cues[i].time_ms * 320 / ((long)d.duration_s * 1000));
+    if (cueX < 0) cueX = 0;
+    if (cueX > 319 - TI_CUE_BOX_W) cueX = 319 - TI_CUE_BOX_W;
+    int lineX = cueX + TI_CUE_BOX_W / 2;
+    for (int dx = -1; dx <= 1; dx++) {
+      int cx = x + dx;
+      if (cx >= cueX && cx < cueX + TI_CUE_BOX_W) {
+        tft.drawFastVLine(cx, wfY, TI_CUE_BOX_H, d.cues[i].color565);
+      }
+      if (cx == lineX) {
+        tft.drawFastVLine(cx, wfY + TI_CUE_BOX_H, wfH - TI_CUE_BOX_H, d.cues[i].color565);
+      }
+    }
+  }
+}
+
+static void tiDrawOverviewNeedle(TrackDeck& d, int deckIdx, int wfY, int wfH) {
+  tiWfY[deckIdx] = wfY;
+  tiWfH[deckIdx] = wfH;
+  int xPos = tiPositionToX(d);
+  if (xPos < 0) return;
+  if (tiPlayheadX[deckIdx] >= 0 && tiPlayheadX[deckIdx] != xPos) {
+    tiRestoreWaveformColumn(d, tiPlayheadX[deckIdx], wfY, wfH);
+  }
+  tiDrawNeedleLine(xPos, wfY, wfH);
+  tiPlayheadX[deckIdx] = xPos;
+}
+
+// Draw one waveform column from an [r,g,b,h] sample
+static void tiDrawSampleColumn(const uint8_t sample[4], int x, int y, int wfH) {
+  uint8_t h = sample[3];
+  if (h == 0) return;
+  uint16_t color = rgb3to565(sample[0], sample[1], sample[2]);
+  int barH = (h * wfH) / 31;
+  if (barH < 1) barH = 1;
+  int midY = y + wfH / 2;
+  tft.drawFastVLine(x, midY - barH / 2, barH, color);
+}
+
+// Zoomed scrolling waveform: fixed center needle, strip moves under it
+static void tiDrawZoomWaveform(int deckIdx, int wfY, int wfH) {
+  TrackDeck& d = tiDecks[deckIdx];
+  tiWfY[deckIdx] = wfY;
+  tiWfH[deckIdx] = wfH;
+  tft.fillRect(0, wfY, 320, wfH, THEME_BG);
+
+  if (tiHasZoomWindow[deckIdx]) {
+    for (int x = 0; x < 320; x++) {
+      tiDrawSampleColumn(tiZoomWindow[deckIdx][x], x, wfY, wfH);
+    }
+  } else if (d.hasWaveform && d.hasPosition && d.duration_s > 0) {
+    // Fallback: synthesize a coarse zoom from the 320 overview strip
+    long durMs = (long)d.duration_s * 1000L;
+    float bpm = d.bpm > 0 ? d.bpm : 120.0f;
+    long windowMs = (long)((8.0f * 60000.0f) / bpm);
+    if (windowMs < 500) windowMs = 500;
+    if (windowMs > durMs) windowMs = durMs;
+    long startMs = (long)d.position_ms - windowMs / 2;
+    for (int x = 0; x < 320; x++) {
+      long tMs = startMs + ((long)x * windowMs) / 320;
+      if (tMs < 0 || tMs >= durMs) continue;
+      int src = (int)(tMs * 320L / durMs);
+      if (src < 0) src = 0;
+      if (src > 319) src = 319;
+      tiDrawSampleColumn(d.waveform[src], x, wfY, wfH);
+    }
+  } else if (d.hasWaveform) {
+    tiDrawWaveform(d, wfY, wfH);
+  } else {
+    tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
+    tft.drawCentreString("No waveform", 160, wfY + wfH / 2 - 4, 1);
+  }
+
+  // Fixed center playhead
+  if (d.hasPosition) {
+    tiDrawNeedleLine(160, wfY, wfH);
+  } else {
+    tft.setTextColor(THEME_WARNING, THEME_BG);
+    tft.drawCentreString("No live playhead", 160, wfY + 2, 1);
+  }
+}
+
+static void tiDrawOverviewStrip(TrackDeck& d, int deckIdx, int y, int h) {
+  tiOverviewY[deckIdx] = y;
+  tft.fillRect(0, y, 320, h, THEME_BG);
+  if (d.hasWaveform) {
+    for (int x = 0; x < 320; x++) {
+      tiDrawSampleColumn(d.waveform[x], x, y, h);
+    }
+  }
+  tiDrawCueMarkers(d, y, h);
+  int xPos = tiPositionToX(d);
+  if (xPos >= 0) tiDrawNeedleLine(xPos, y, h);
+}
+
+static String tiFormatDuration(int secs);
+
+static void tiUpdateElapsedLabel(TrackDeck& d) {
+  if (tiElapsedLabelY <= 0) return;
+  tft.fillRect(200, tiElapsedLabelY, 116, 26, THEME_BG);
+  if (!d.hasPosition) return;
+  int secs = (int)(d.position_ms / 1000);
+  String elapsed = tiFormatDuration(secs);
+  tft.setTextColor(TI_NEEDLE_COLOR, THEME_BG);
+  int w = tft.textWidth(elapsed, 4);
+  tft.drawString(elapsed, 320 - w - 4, tiElapsedLabelY, 4);
+}
+
+static void tiUpdatePlayheads() {
+  // Classic TRACK screen is static overview + comments — no live needle updates
+  if (tiUiStyle != TI_UI_LIVE) {
+    tiPlayheadDirty = false;
+    return;
+  }
+  if (!tiPlayheadDirty) return;
+  tiPlayheadDirty = false;
+
+  if (tiExpandedDeck == -1) {
+    for (int i = 0; i < 2; i++) {
+      if (tiWfH[i] <= 0) continue;
+      tiDrawOverviewNeedle(tiDecks[i], i, tiWfY[i], tiWfH[i]);
+    }
+  } else {
+    int i = tiExpandedDeck;
+    if (tiWfH[i] > 0) {
+      tiDrawZoomWaveform(i, tiWfY[i], tiWfH[i]);
+      if (tiOverviewY[i] > 0) {
+        tiDrawOverviewStrip(tiDecks[i], i, tiOverviewY[i], TI_WF_H_OVERVIEW);
+      }
+      tiUpdateElapsedLabel(tiDecks[i]);
+    }
   }
 }
 
@@ -585,9 +845,12 @@ static void tiDrawDeckCompact(int deckIdx, int baseY) {
   int titleAvailW = metaX - titleX - 6;
   tiDrawTitle(deckIdx, d.title, titleX, baseY, titleAvailW, 2);
 
-  // Waveform + cues
+  // Overview waveform + cues (+ live needle only in LIVE VIEW)
   tiDrawWaveform(d, wfY, TI_WF_H);
   tiDrawCueMarkers(d, wfY, TI_WF_H);
+  if (tiUiStyle == TI_UI_LIVE) {
+    tiDrawOverviewNeedle(d, deckIdx, wfY, TI_WF_H);
+  }
 
   // Comment below waveform (scrolls if too long)
   tiDrawCommentWithScroll(deckIdx, d.comment, 4, commentY, 312, 2);
@@ -600,29 +863,26 @@ static String tiFormatDuration(int secs) {
   return String(m) + ":" + (s < 10 ? "0" : "") + String(s);
 }
 
-// Expanded deck view: full metadata, tall waveform, readable comment
-static void tiDrawDeckExpanded(int deckIdx, int baseY) {
+// Expanded TRACK: classic tall overview + cue legend + large comment
+static void tiDrawDeckExpandedTrack(int deckIdx, int baseY) {
   TrackDeck& d = tiDecks[deckIdx];
 
   tiDeckTouchY[deckIdx] = baseY;
   tiDeckTouchH[deckIdx] = 240 - baseY;
+  tiElapsedLabelY = 0;
+  tiOverviewY[deckIdx] = 0;
 
-  // Row 1: Deck label + Title (scrolls if too long)
   bool isA = tiDecksSwapped ? (deckIdx == 1) : (deckIdx == 0);
   tft.setTextColor(THEME_PRIMARY, THEME_BG);
   tft.drawString(isA ? "A" : "B", 2, baseY, 2);
   int titleX = 16;
-  int titleAvailW = 320 - titleX - 4;
-  tiDrawTitle(deckIdx, d.title, titleX, baseY, titleAvailW, 2);
+  tiDrawTitle(deckIdx, d.title, titleX, baseY, 320 - titleX - 4, 2);
 
-  // Row 2: BPM | Key | Duration in large font (font 4 = 26px)
   int row2Y = baseY + 20;
   tft.setTextColor(THEME_PRIMARY, THEME_BG);
   tft.drawString(String(d.bpm, 1), 4, row2Y, 4);
-
   tft.setTextColor(THEME_ACCENT, THEME_BG);
   tft.drawString(d.key, 110, row2Y, 4);
-
   if (d.duration_s > 0) {
     tft.setTextColor(THEME_TEXT, THEME_BG);
     String durStr = tiFormatDuration(d.duration_s);
@@ -630,19 +890,70 @@ static void tiDrawDeckExpanded(int deckIdx, int baseY) {
     tft.drawString(durStr, 320 - durW - 4, row2Y, 4);
   }
 
-  // Row 3: Waveform (tall - fills most of the screen width)
   int wfY = row2Y + 30;
+  tiWfY[deckIdx] = wfY;
+  tiWfH[deckIdx] = TI_WF_H_EXPANDED;
   tiDrawWaveform(d, wfY, TI_WF_H_EXPANDED);
   tiDrawCueMarkers(d, wfY, TI_WF_H_EXPANDED);
 
-  // Row 4: Hot cue legend - variable-width pills with label or time
   int legendY = wfY + TI_WF_H_EXPANDED + 6;
   tiDrawCueLegend(d, deckIdx, legendY, 2);
 
-  // Row 5: Comment (~1.5x size via font 4, scrolls if too long)
   int commentY = legendY + 22;
   if (commentY + 26 <= 240) {
     tiDrawCommentWithScroll(deckIdx, d.comment, 4, commentY, 312, 4);
+  }
+}
+
+// Expanded LIVE VIEW: zoomed scrolling waveform + overview strip
+static void tiDrawDeckExpandedLive(int deckIdx, int baseY) {
+  TrackDeck& d = tiDecks[deckIdx];
+
+  tiDeckTouchY[deckIdx] = baseY;
+  tiDeckTouchH[deckIdx] = 240 - baseY;
+
+  bool isA = tiDecksSwapped ? (deckIdx == 1) : (deckIdx == 0);
+  tft.setTextColor(THEME_PRIMARY, THEME_BG);
+  tft.drawString(isA ? "A" : "B", 2, baseY, 2);
+  int titleX = 16;
+  tiDrawTitle(deckIdx, d.title, titleX, baseY, 320 - titleX - 4, 2);
+
+  int row2Y = baseY + 18;
+  tiElapsedLabelY = row2Y;
+  tft.setTextColor(THEME_PRIMARY, THEME_BG);
+  tft.drawString(String(d.bpm, 1), 4, row2Y, 4);
+  tft.setTextColor(THEME_ACCENT, THEME_BG);
+  tft.drawString(d.key, 100, row2Y, 4);
+
+  if (d.hasPosition) {
+    tiUpdateElapsedLabel(d);
+  } else if (d.duration_s > 0) {
+    tft.setTextColor(THEME_TEXT, THEME_BG);
+    String durStr = tiFormatDuration(d.duration_s);
+    int durW = tft.textWidth(durStr, 4);
+    tft.drawString(durStr, 320 - durW - 4, row2Y, 4);
+  }
+
+  int wfY = row2Y + 28;
+  tiDrawZoomWaveform(deckIdx, wfY, TI_WF_H_EXPANDED);
+
+  int ovY = wfY + TI_WF_H_EXPANDED + 3;
+  tiDrawOverviewStrip(d, deckIdx, ovY, TI_WF_H_OVERVIEW);
+
+  int legendY = ovY + TI_WF_H_OVERVIEW + 4;
+  tiDrawCueLegend(d, deckIdx, legendY, 2);
+
+  int commentY = legendY + 18;
+  if (commentY + 22 <= 240) {
+    tiDrawCommentWithScroll(deckIdx, d.comment, 4, commentY, 312, 2);
+  }
+}
+
+static void tiDrawDeckExpanded(int deckIdx, int baseY) {
+  if (tiUiStyle == TI_UI_LIVE) {
+    tiDrawDeckExpandedLive(deckIdx, baseY);
+  } else {
+    tiDrawDeckExpandedTrack(deckIdx, baseY);
   }
 }
 
@@ -714,24 +1025,51 @@ static void tiRedrawContent() {
 // Flag to track whether mDNS has been initialized for this session
 static bool tiMdnsReady = false;
 
-void initializeTrackInfoMode() {
-  tiWsConnected = false;
-  tiServerFound = false;
-  tiDataReceived = false;
+static bool tiCallbacksReady = false;
+
+static void tiEnterScreen(TiUiStyle style) {
+  tiUiStyle = style;
+  tiDataReceived = false;  // force content redraw with current cached decks if any
   tiLastReconnect = 0;
   tiExpandedDeck = -1;
   tiExpandedCue = -1;
   tiExpandedCueDeck = -1;
   tiLegendY[0] = 0;
   tiLegendY[1] = 0;
-  tiMdnsReady = false;
-  memset(tiDecks, 0, sizeof(tiDecks));
+  tiPlayheadDirty = false;
+  tiElapsedLabelY = 0;
   for (int i = 0; i < 2; i++) {
     tiTitleScroll[i] = {0, 0, 1, 0, false, 0, 0, 0, 0, 0};
     tiCommentScroll[i] = {0, 0, 1, 0, false, 0, 0, 0, 0, 0};
+    tiWfY[i] = 0;
+    tiWfH[i] = 0;
+    tiOverviewY[i] = 0;
+    tiPlayheadX[i] = -1;
   }
-  tiWsClient.onMessage(tiOnMessage);
-  tiWsClient.onEvent(tiOnEvent);
+  // Keep WS connection + deck cache across TRACK <-> LIVE VIEW switches
+  if (!tiCallbacksReady) {
+    tiWsConnected = false;
+    tiServerFound = false;
+    tiMdnsReady = false;
+    memset(tiDecks, 0, sizeof(tiDecks));
+    tiHasZoomWindow[0] = false;
+    tiHasZoomWindow[1] = false;
+    tiWsClient.onMessage(tiOnMessage);
+    tiWsClient.onEvent(tiOnEvent);
+    tiCallbacksReady = true;
+  }
+  // If we already have track titles cached, redraw content after draw*()
+  if (tiDecks[0].title.length() > 0 || tiDecks[1].title.length() > 0) {
+    tiDataReceived = true;
+  }
+}
+
+void initializeTrackInfoMode() {
+  tiEnterScreen(TI_UI_TRACK);
+}
+
+void initializeLiveViewMode() {
+  tiEnterScreen(TI_UI_LIVE);
 }
 
 void drawTrackInfoMode() {
@@ -739,6 +1077,10 @@ void drawTrackInfoMode() {
   tiDrawBackButton();
   tiDrawSwapButton();
   tiDrawStatus();
+}
+
+void drawLiveViewMode() {
+  drawTrackInfoMode();
 }
 
 void handleTrackInfoMode() {
@@ -862,7 +1204,7 @@ void handleTrackInfoMode() {
     }
   }
 
-  // Redraw when new data arrives
+  // Redraw when new track data arrives
   if (tiDataReceived) {
     tiDataReceived = false;
     tiExpandedCue = -1;
@@ -880,6 +1222,9 @@ void handleTrackInfoMode() {
     tiRedrawContent();
   }
 
+  // Move playhead needle without a full screen redraw
+  tiUpdatePlayheads();
+
   // Animate title and comment scrolling (runs every loop iteration, self-throttled)
   if (tiExpandedDeck == -1) {
     tiUpdateTitleScroll(0);
@@ -890,6 +1235,10 @@ void handleTrackInfoMode() {
     tiUpdateTitleScroll(tiExpandedDeck);
     tiUpdateCommentScroll(tiExpandedDeck);
   }
+}
+
+void handleLiveViewMode() {
+  handleTrackInfoMode();
 }
 
 #endif
