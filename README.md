@@ -182,9 +182,9 @@ Rekordbox Performance Mode does not expose playhead over MIDI or Pro DJ Link on 
 ./run.sh -resign
 ```
 
-That vendors rkbx_link if needed and runs its re-sign script (adds `get-task-allow`). Then start Rekordbox → `./run.sh` (may prompt for sudo) → open **LIVE VIEW** on the CYD (needs Rekordbox 7.2.8 on macOS for playhead).
+That vendors rkbx_link if needed and runs its re-sign script (adds `get-task-allow`). Then start Rekordbox → `./run.sh` (may prompt for sudo) → open **LIVE VIEW** on the CYD.
 
-- **macOS live playhead only works with Rekordbox 7.2.8** — that is the only version with community memory offsets in rkbx_link. Newer installs (e.g. 7.2.14 / 7.2.16) get task access but fail memory reads → CYD shows "No live playhead". Track metadata/waveform still work. See [rkbx_link#55](https://github.com/grufkork/rkbx_link/issues/55).
+- **macOS live playhead**: community offsets cover **7.2.8**; this project also ships **7.2.16** offsets (`companion_app/data/offsets-macos-7.2.16`, chain hop `0x8`). Other 7.2.x builds still need RE via `rb_memory_scan.py`. See [rkbx_link#55](https://github.com/grufkork/rkbx_link/issues/55).
 - Use `./run.sh --no-rkbx` for static waveform only
 - Upstream license is GPL-3.0; it lives under `companion_app/.vendor/` (gitignored), not under this project's MIT code
 
@@ -214,7 +214,8 @@ That vendors rkbx_link if needed and runs its re-sign script (adds `get-task-all
 - **WiFi won't connect**: Use "FORGET NETWORK" on the Setup screen and try scanning again
 - **Track Info shows "Searching..."**: Ensure the companion server is running, both devices are on the same WiFi, and mDNS is not blocked by your router
 - **Track Info wrong deck assignment**: Tap the swap (↑↓) button in the top-right corner. The server's initial deck guess may be wrong when starting with cached files - it self-corrects on the first track load
-- **No live playhead / "No live playhead" on CYD**: Almost always a Rekordbox **version mismatch** on Mac. Check `mdls -name kMDItemVersion "/Applications/rekordbox 7/rekordbox.app"` — if it is not **7.2.8**, rkbx_link cannot read playhead (log shows `Read memory failed: mach error: 1`). Also confirm `./run.sh -resign` was done once, and `rkbx_link.log` is not only retrying `...`.
+- **No live playhead / "No live playhead" on CYD**: Check Rekordbox version (`7.2.8` or `7.2.16` on Mac), that `./run.sh -resign` was done once, and `companion_app/.vendor/rkbx_link/rkbx_link.log` shows OSC `/time` (not only `Read memory failed`). On 7.2.16, play the deck that matches hop `0x8` (see `probe-hops`).
+- **Mac offsets for other versions**: `companion_app/scripts/rb_memory_scan.py` (`live-triage` → `trace-up` → `probe-hops`).
 
 ## License
 

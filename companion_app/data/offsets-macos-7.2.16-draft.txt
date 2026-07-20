@@ -1,0 +1,27 @@
+# DRAFT Mac offsets for Rekordbox 7.2.16 (Apple Silicon)
+# Discovered 2026-07-20 via companion_app/scripts/rb_memory_scan.py
+#
+# Leaf layout matches 7.2.8: sample FINAL=120, BPM FINAL=188
+# Mid offset changed: 2C8 → 550
+# Static: B31CC40
+#
+# VERIFIED (track playing, BPM 92):
+#   B31CC40 8 550 120  → live sample i64 + BPM 92.0
+#
+# NOT valid (same session):
+#   B31CC40 0 550 120  → garbage
+#   B31CC40 10 550 120 → unreadable
+#   B31CC40 18 550 120 → resolve failed
+#
+# So the 7.2.8 deck-hop table (0/8/10/18) is NOT a drop-in for 7.2.16.
+# Map other decks with:
+#   sudo python3 companion_app/scripts/rb_memory_scan.py probe-hops --bpm 92
+#
+# Format matches rkbx_link data/offsets-macos
+
+7.2.16
+# Active deck path verified with hop=8 (confirm which RB deck this is)
+# Deck ? BPM float
+B31CC40 8 550 188
+# Deck ? Sample position
+B31CC40 8 550 120

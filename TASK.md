@@ -6,9 +6,15 @@
   MAP sliders for LevelDepth + CFX Parameter; then remove MAP helpers
 - [ ] End-to-end test live playhead + zoom scroll: rkbx_link + companion +
   CYD TRACK expanded (jog / hotcue / pause); confirm yellow needle + scroll
+- [ ] Map 7.2.16 deck hops 1–4 via `probe-hops` (only hop 0x8 verified)
+- [ ] End-to-end: `./run.sh` + RB 7.2.16 + LIVE VIEW needle while scratching
 
 ## Completed
 
+- [x] 2026-07-20 — Verified Mac 7.2.16 sample/BPM chain `B31CC40 8 550 120/188`
+  and shipped `companion_app/data/offsets-macos-7.2.16` into rkbx_link merge.
+- [x] 2026-07-20 — Added `companion_app/scripts/rb_memory_scan.py` to help
+  reverse-engineer rkbx_link macOS offsets for newer Rekordbox versions.
 - [x] 2026-07-19 — Live playhead via rkbx_link OSC: companion ingests
   `/N/time` on UDP 4460 and pushes `{"type":"playhead"}` at ~25 Hz;
   CYD TRACK draws a white needle on the ANLZ waveform without full redraws.
@@ -32,6 +38,11 @@
 
 ## Discovered During Work
 
+- 2026-07-20 — Bridge snap-back caused playhead sawtooth; reconnect blocked
+  Back button. Plateau bridge + one-step reconnect FSM.
+- 2026-07-20 — Simplified LIVE VIEW data path: meta once, chunked 2048-col
+  wave into RAM, playhead-only stream; local scroll/extrapolate. (Prior
+  fat `wave_window` / embedded `wave_hi_b64` caused parse fails / OOM.)
 - macOS rkbx_link community offsets only cover Rekordbox **7.2.8**.
   On 7.2.16: task port OK, then `Read memory failed: mach error: 1` —
   no OSC `/N/time`, CYD shows "No live playhead". See rkbx_link#55.

@@ -29,9 +29,69 @@ detect_platform() {
   esac
 }
 
+detect_rekordbox_short_version() {
+  local app="/Applications/rekordbox 7/rekordbox.app"
+  if [[ ! -d "${app}" ]]; then
+    app="/Applications/rekordbox.app"
+  fi
+  if [[ ! -d "${app}" ]]; then
+    echo ""
+    return 0
+  fi
+  mdls -name kMDItemVersion "${app}" 2>/dev/null \
+    | sed -n 's/.*"\([0-9][0-9.]*\)".*/\1/p' \
+    | head -1 \
+    | awk -F. '{print $1"."$2"."$3}'
+}
+
+# Merge project-authored Mac offsets (e.g. 7.2.16) into vendored offsets-macos.
+merge_project_offsets() {
+  local dest="$SRC_DIR/data/offsets-macos"
+  local project_offsets="$COMPANION_DIR/data/offsets-macos-7.2.16"
+  mkdir -p "$SRC_DIR/data"
+  if [[ ! -f "$project_offsets" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$dest" ]]; then
+    cp "$project_offsets" "$dest"
+    log "Installed project offsets → $dest"
+    return 0
+  fi
+  # Reason: rkbx_link only commits a version block after ≥2 blank lines;
+  # without a trailing blank pair, 7.2.16 is parsed but never inserted.
+  if grep -q '^7\.2\.16$' "$dest" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+      BEGIN {skip=0}
+      /^7\.2\.16$/ {skip=1; next}
+      skip && /^[0-9]+\.[0-9]+\.[0-9]+$/ {skip=0}
+      !skip {print}
+    ' "$dest" > "$tmp"
+    # Trim trailing blanks, then append project block (includes its own \n\n)
+    perl -i -pe 'chomp if eof' "$tmp" 2>/dev/null || true
+    printf '\n\n' >> "$tmp"
+    cat "$project_offsets" >> "$tmp"
+    mv "$tmp" "$dest"
+    log "Updated 7.2.16 block in $dest"
+  else
+    # Ensure separator from previous version
+    printf '\n\n' >> "$dest"
+    cat "$project_offsets" >> "$dest"
+    log "Appended 7.2.16 offsets → $dest"
+  fi
+}
+
 write_cyd_config() {
   local dest="$1"
-  local rb_version="${RKBX_REKORDBOX_VERSION:-7.2.8}"
+  local rb_version="${RKBX_REKORDBOX_VERSION:-}"
+  if [[ -z "$rb_version" ]]; then
+    rb_version="$(detect_rekordbox_short_version)"
+  fi
+  if [[ -z "$rb_version" ]]; then
+    rb_version="7.2.16"
+  fi
+  log "Config keeper.rekordbox_version=${rb_version}"
   cat > "$dest" <<EOF
 # Auto-generated for Rekordbox-Midi-Controller CYD companion.
 # Source: https://github.com/grufkork/rkbx_link (GPL-3.0)
@@ -43,9 +103,12 @@ app.debug false
 app.yes_to_all true
 
 keeper.rekordbox_version ${rb_version}
-keeper.update_rate 60
+# Higher rate + every OSC packet — CYD needle feels laggy otherwise
+keeper.update_rate 120
 keeper.slow_update_every_nth 10
-keeper.delay_compensation 0
+# Positive ms advances reported time (tune if needle lags audio; try 500–3000)
+# Reason: 2500ms made the CYD needle lag far behind the music; display wants ~0.
+keeper.delay_compensation ${RKBX_DELAY_COMPENSATION_MS:-0}
 keeper.keep_warm true
 keeper.decks 2
 
@@ -57,7 +120,7 @@ link.enabled false
 osc.enabled true
 osc.source 127.0.0.1:4450
 osc.destination 127.0.0.1:4460
-osc.send_every_nth 2
+osc.send_every_nth 1
 osc.phrase_output_format int
 osc.trigger_autorelease false
 
@@ -174,6 +237,10 @@ main() {
     log "ERROR: rkbx_link binary missing at $bin"
     exit 1
   fi
+
+  merge_project_offsets
+  # Re-write config after merge so version matches installed Rekordbox
+  write_cyd_config "$SRC_DIR/config"
 
   # Absolute path to the working directory (stdout — consumed by run.sh)
   echo "$SRC_DIR"

@@ -19,7 +19,10 @@ using namespace websockets;
 #define TI_CUE_BOX_W    12
 #define TI_CUE_BOX_H    10
 #define TI_MAX_CUES       8
-#define TI_WS_RECONNECT_MS 3000
+#define TI_WS_RECONNECT_MS 4000
+// Reconnect state machine — one blocking step per tick so Back stays responsive
+enum TiWsStep { TI_WS_STEP_MDNS = 0, TI_WS_STEP_DISCOVER = 1, TI_WS_STEP_CONNECT = 2 };
+static int tiWsStep = TI_WS_STEP_MDNS;
 #define TI_NEEDLE_COLOR  0xFFE0  // bright yellow — visible on any waveform color
 #define TI_NEEDLE_EDGE   TFT_BLACK
 
@@ -66,15 +69,38 @@ static TiUiStyle tiUiStyle = TI_UI_TRACK;
 // View state: -1 = compact (both decks), 0 = deck A expanded, 1 = deck B expanded
 static int tiExpandedDeck = -1;
 
-// Live playhead / zoom (updated by lightweight {"type":"playhead"} WS msgs)
+// Live playhead / zoom
+// Architecture: track meta + dense waveform load once into RAM; WS playhead
+// is position-only (~20 Hz). CYD extrapolates and scrolls locally (~30 Hz).
 static int tiWfY[2] = {0, 0};
 static int tiWfH[2] = {0, 0};
 static int tiOverviewY[2] = {0, 0};
 static int tiPlayheadX[2] = {-1, -1};
 static bool tiPlayheadDirty = false;
-static uint8_t tiZoomWindow[2][320][4];  // scrolling zoom strip from companion
-static bool tiHasZoomWindow[2] = {false, false};
 static int tiElapsedLabelY = 0;
+#define TI_WAVE_N 2048
+#define TI_ZOOM_BEATS 8.0f
+#define TI_ZOOM_REDRAW_MS 16  // paint as fast as SPI allows; scroll is local
+// Reason: set to 1, flash, open Serial Monitor 115200; pair with
+// ./run.sh --playhead-debug on the Mac
+#ifndef TI_PLAYHEAD_DEBUG
+#define TI_PLAYHEAD_DEBUG 1
+#endif
+#if TI_PLAYHEAD_DEBUG
+static unsigned long tiPhLogMs = 0;
+#endif
+static uint8_t tiWave[2][TI_WAVE_N][4];  // dense color waveform in RAM
+static uint16_t tiWaveN[2] = {0, 0};     // expected columns (from wave msg)
+static uint16_t tiWaveHave[2] = {0, 0};  // columns received so far
+static int tiLastZoomSrcIdx[2] = {-1, -1};
+static unsigned long tiLastZoomDrawMs = 0;
+static unsigned long tiPosStampMs[2] = {0, 0};
+static uint32_t tiPosBaseMs[2] = {0, 0};
+static uint32_t tiLastIncomingMs[2] = {0, 0};
+static uint8_t tiStallCount[2] = {0, 0};  // consecutive non-advancing playhead msgs
+static bool tiTransportPaused[2] = {false, false};
+static int tiLastElapsedSec = -1;
+static unsigned long tiLastOverviewMs = 0;
 
 // Swap button: lets user correct A/B deck assignment when detection is wrong
 #define TI_SWAP_BTN_X  288
@@ -238,6 +264,64 @@ static int tiSlotToIndex(const char* slot) {
   return -1;
 }
 
+// Decode standard base64; returns byte count or -1.
+static int tiB64Decode(const char* in, size_t inLen, uint8_t* out, size_t outMax) {
+  auto val = [](unsigned char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    if (c == '=') return -2;
+    return -1;
+  };
+  size_t o = 0;
+  uint32_t buf = 0;
+  int bits = 0;
+  for (size_t i = 0; i < inLen; i++) {
+    int v = val((unsigned char)in[i]);
+    if (v == -2) break;
+    if (v < 0) continue;
+    buf = (buf << 6) | (uint32_t)v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (o >= outMax) return -1;
+      out[o++] = (uint8_t)((buf >> bits) & 0xFF);
+    }
+  }
+  return (int)o;
+}
+
+// Build 320-col overview from dense tiWave into TrackDeck.waveform
+static void tiRebuildOverview(int idx) {
+  TrackDeck& d = tiDecks[idx];
+  uint16_t n = tiWaveN[idx];
+  if (n == 0 || tiWaveHave[idx] < n) {
+    d.hasWaveform = false;
+    return;
+  }
+  for (int x = 0; x < 320; x++) {
+    int src = (int)((long)x * (long)n / 320L);
+    if (src >= n) src = n - 1;
+    d.waveform[x][0] = tiWave[idx][src][0];
+    d.waveform[x][1] = tiWave[idx][src][1];
+    d.waveform[x][2] = tiWave[idx][src][2];
+    d.waveform[x][3] = tiWave[idx][src][3];
+  }
+  d.hasWaveform = true;
+}
+
+static void tiClearWave(int idx) {
+  tiWaveN[idx] = 0;
+  tiWaveHave[idx] = 0;
+  tiLastZoomSrcIdx[idx] = -1;
+  tiDecks[idx].hasWaveform = false;
+  tiLastIncomingMs[idx] = 0;
+  tiStallCount[idx] = 0;
+  tiTransportPaused[idx] = false;
+}
+
 static void tiParseDeck(JsonObject deckObj, int idx) {
   TrackDeck& d = tiDecks[idx];
   d.title = deckObj["title"].as<String>();
@@ -247,12 +331,12 @@ static void tiParseDeck(JsonObject deckObj, int idx) {
   d.duration_s = deckObj["duration_s"] | 0;
   d.comment = deckObj["comment"].as<String>();
 
-  if (deckObj["position_ms"].isNull()) {
-    d.hasPosition = false;
-    d.position_ms = 0;
-  } else {
+  // Reason: track refresh must not wipe a live playhead from playhead msgs
+  if (!deckObj["position_ms"].isNull()) {
     d.position_ms = deckObj["position_ms"] | 0;
     d.hasPosition = true;
+    tiPosBaseMs[idx] = d.position_ms;
+    tiPosStampMs[idx] = millis();
   }
 
   JsonArray cuesArr = deckObj["hot_cues"];
@@ -273,51 +357,61 @@ static void tiParseDeck(JsonObject deckObj, int idx) {
     d.numCues++;
   }
 
-  JsonArray wfArr = deckObj["waveform"];
-  if (wfArr.isNull() || wfArr.size() == 0) {
-    d.hasWaveform = false;
-  } else {
-    d.hasWaveform = true;
-    int col = 0;
-    for (JsonArray pt : wfArr) {
-      if (col >= 320) break;
-      d.waveform[col][0] = pt[0] | 0;
-      d.waveform[col][1] = pt[1] | 0;
-      d.waveform[col][2] = pt[2] | 0;
-      d.waveform[col][3] = pt[3] | 0;
-      col++;
-    }
-    for (; col < 320; col++) {
-      d.waveform[col][0] = 0;
-      d.waveform[col][1] = 0;
-      d.waveform[col][2] = 0;
-      d.waveform[col][3] = 0;
-    }
+  // Waveform arrives separately as chunked type:"wave" messages
+  tiClearWave(idx);
+}
+
+// Chunked dense waveform: {"type":"wave","slot","off","n","data":b64}
+static void tiParseWaveMessage(JsonObject doc) {
+  int idx = tiSlotToIndex(doc["slot"]);
+  if (idx < 0) return;
+  int off = doc["off"] | 0;
+  int n = doc["n"] | 0;
+  const char* b64 = doc["data"];
+  if (!b64 || n <= 0 || n > TI_WAVE_N || off < 0 || off >= n) return;
+
+  if (tiWaveN[idx] != (uint16_t)n) {
+    tiWaveN[idx] = (uint16_t)n;
+    tiWaveHave[idx] = 0;
+  }
+
+  // Max chunk = 256 cols × 2 bytes (matches companion WAVE_CHUNK_COLS)
+  static uint8_t raw[512];
+  int nbytes = tiB64Decode(b64, strlen(b64), raw, sizeof(raw));
+  if (nbytes < 2) return;
+  int cols = nbytes / 2;
+  if (off + cols > n) cols = n - off;
+
+  for (int i = 0; i < cols; i++) {
+    uint16_t v = (uint16_t)raw[i * 2] | ((uint16_t)raw[i * 2 + 1] << 8);
+    tiWave[idx][off + i][0] = v & 7;
+    tiWave[idx][off + i][1] = (v >> 3) & 7;
+    tiWave[idx][off + i][2] = (v >> 6) & 7;
+    tiWave[idx][off + i][3] = (v >> 9) & 31;
+  }
+  uint16_t end = (uint16_t)(off + cols);
+  if (end > tiWaveHave[idx]) tiWaveHave[idx] = end;
+
+  if (tiWaveHave[idx] >= tiWaveN[idx]) {
+    tiRebuildOverview(idx);
+    tiLastZoomSrcIdx[idx] = -1;
+    tiDataReceived = true;  // refresh UI once dense wave is complete
   }
 }
 
-static void tiParseWaveWindow(JsonObject deckObj, int idx) {
-  JsonArray ww = deckObj["wave_window"];
-  if (ww.isNull() || ww.size() == 0) {
-    tiHasZoomWindow[idx] = false;
-    return;
-  }
-  tiHasZoomWindow[idx] = true;
-  int col = 0;
-  for (JsonArray pt : ww) {
-    if (col >= 320) break;
-    tiZoomWindow[idx][col][0] = pt[0] | 0;
-    tiZoomWindow[idx][col][1] = pt[1] | 0;
-    tiZoomWindow[idx][col][2] = pt[2] | 0;
-    tiZoomWindow[idx][col][3] = pt[3] | 0;
-    col++;
-  }
-  for (; col < 320; col++) {
-    tiZoomWindow[idx][col][0] = 0;
-    tiZoomWindow[idx][col][1] = 0;
-    tiZoomWindow[idx][col][2] = 0;
-    tiZoomWindow[idx][col][3] = 0;
-  }
+// Advance playhead by wall time since last sync (playing only).
+static uint32_t tiExtrapolatedPositionMs(int idx) {
+  TrackDeck& d = tiDecks[idx];
+  if (!d.hasPosition || tiPosStampMs[idx] == 0) return d.position_ms;
+  // Reason: soft-rebase kept running after pause; freeze when transport stalls
+  if (tiTransportPaused[idx]) return tiPosBaseMs[idx];
+  unsigned long elapsed = millis() - tiPosStampMs[idx];
+  // Short bridge between 50ms packets — long caps caused multi-second lag
+  if (elapsed > 100) elapsed = 100;
+  uint32_t pos = tiPosBaseMs[idx] + (uint32_t)elapsed;
+  uint32_t durMs = (uint32_t)d.duration_s * 1000UL;
+  if (durMs > 0 && pos > durMs) pos = durMs;
+  return pos;
 }
 
 static void tiParsePlayheadMessage(JsonArray decks) {
@@ -329,12 +423,60 @@ static void tiParsePlayheadMessage(JsonArray decks) {
       i++;
       continue;
     }
-    tiDecks[idx].position_ms = deckObj["position_ms"] | 0;
+    uint32_t incoming = deckObj["position_ms"] | 0;
+    uint32_t prevIn = tiLastIncomingMs[idx];
+    uint32_t shownBefore = tiExtrapolatedPositionMs(idx);
+
+    // Pause/stall: flat position. Any real move (including scratch back) resets.
+    if (tiDecks[idx].hasPosition) {
+      int dMove = (int)incoming - (int)tiLastIncomingMs[idx];
+      if (dMove > 8 || dMove < -8) {
+        tiStallCount[idx] = 0;
+      } else if (tiStallCount[idx] < 255) {
+        tiStallCount[idx]++;
+      }
+    } else {
+      tiStallCount[idx] = 0;
+    }
+    tiLastIncomingMs[idx] = incoming;
+    // ~3 flat ticks ≈ 150ms → freeze local extrapolation
+    bool wasPaused = tiTransportPaused[idx];
+    tiTransportPaused[idx] = (tiStallCount[idx] >= 3);
+
+    // Hard sync to Rekordbox every packet (no soft-rebase drift)
     tiDecks[idx].hasPosition = true;
+    tiDecks[idx].position_ms = incoming;
+    tiPosBaseMs[idx] = incoming;
+    tiPosStampMs[idx] = millis();
+
     if (!deckObj["bpm"].isNull()) {
       tiDecks[idx].bpm = deckObj["bpm"] | tiDecks[idx].bpm;
     }
-    tiParseWaveWindow(deckObj, idx);
+
+#if TI_PLAYHEAD_DEBUG
+    char slot = (idx == 0) ? 'A' : 'B';
+    int dIn = (int)incoming - (int)prevIn;
+    int lag = (int)shownBefore - (int)incoming;  // >0 = CYD was ahead of packet
+    bool pauseEdge = (tiTransportPaused[idx] != wasPaused);
+    unsigned long now = millis();
+    if (pauseEdge || (now - tiPhLogMs) >= 200) {
+      tiPhLogMs = now;
+      Serial.printf(
+          "[PH] uptime=%lu slot=%c in=%lu d_in=%+d shown=%lu lag=%+d "
+          "paused=%d stall=%u\n",
+          now, slot, (unsigned long)incoming, dIn, (unsigned long)shownBefore,
+          lag, tiTransportPaused[idx] ? 1 : 0, (unsigned)tiStallCount[idx]);
+    }
+    if (pauseEdge) {
+      Serial.printf("[PH] slot=%c PAUSE→%s at in=%lu\n", slot,
+                    tiTransportPaused[idx] ? "YES" : "NO",
+                    (unsigned long)incoming);
+    }
+#else
+    (void)prevIn;
+    (void)shownBefore;
+    (void)wasPaused;
+#endif
     i++;
   }
   tiPlayheadDirty = true;
@@ -346,14 +488,17 @@ static void tiOnMessage(WebsocketsMessage msg) {
   if (err) return;
 
   const char* msgType = doc["type"] | "track";
-  JsonArray decks = doc["decks"];
 
-  // Lightweight playhead-only updates — do not rebuild the whole screen
   if (msgType && strcmp(msgType, "playhead") == 0) {
-    tiParsePlayheadMessage(decks);
+    tiParsePlayheadMessage(doc["decks"]);
+    return;
+  }
+  if (msgType && strcmp(msgType, "wave") == 0) {
+    tiParseWaveMessage(doc.as<JsonObject>());
     return;
   }
 
+  JsonArray decks = doc["decks"];
   int idx = 0;
   for (JsonObject deckObj : decks) {
     if (idx >= 2) break;
@@ -363,19 +508,23 @@ static void tiOnMessage(WebsocketsMessage msg) {
   }
   for (; idx < 2; idx++) {
     tiDecks[idx].title = "";
-    tiDecks[idx].hasWaveform = false;
+    tiClearWave(idx);
     tiDecks[idx].hasPosition = false;
     tiDecks[idx].numCues = 0;
     tiPlayheadX[idx] = -1;
   }
+  // Show meta immediately; waveform UI refreshes when wave chunks complete
   tiDataReceived = true;
 }
 
 static void tiOnEvent(WebsocketsEvent event, String data) {
   if (event == WebsocketsEvent::ConnectionOpened) {
     tiWsConnected = true;
+    tiWsStep = TI_WS_STEP_MDNS;
   } else if (event == WebsocketsEvent::ConnectionClosed) {
     tiWsConnected = false;
+    // Rediscover later; don't hammer connect on a dead socket every tick
+    tiWsStep = TI_WS_STEP_DISCOVER;
   }
 }
 
@@ -466,8 +615,7 @@ static void tiRestoreWaveformColumn(TrackDeck& d, int x, int wfY, int wfH) {
 }
 
 static void tiDrawOverviewNeedle(TrackDeck& d, int deckIdx, int wfY, int wfH) {
-  tiWfY[deckIdx] = wfY;
-  tiWfH[deckIdx] = wfH;
+  // Reason: do not clobber tiWfY/tiWfH — in LIVE VIEW those store the zoom strip
   int xPos = tiPositionToX(d);
   if (xPos < 0) return;
   if (tiPlayheadX[deckIdx] >= 0 && tiPlayheadX[deckIdx] != xPos) {
@@ -477,7 +625,7 @@ static void tiDrawOverviewNeedle(TrackDeck& d, int deckIdx, int wfY, int wfH) {
   tiPlayheadX[deckIdx] = xPos;
 }
 
-// Draw one waveform column from an [r,g,b,h] sample
+// Draw one waveform column from an [r,g,b,h] sample (no clear)
 static void tiDrawSampleColumn(const uint8_t sample[4], int x, int y, int wfH) {
   uint8_t h = sample[3];
   if (h == 0) return;
@@ -488,47 +636,128 @@ static void tiDrawSampleColumn(const uint8_t sample[4], int x, int y, int wfH) {
   tft.drawFastVLine(x, midY - barH / 2, barH, color);
 }
 
-// Zoomed scrolling waveform: fixed center needle, strip moves under it
-static void tiDrawZoomWaveform(int deckIdx, int wfY, int wfH) {
-  TrackDeck& d = tiDecks[deckIdx];
-  tiWfY[deckIdx] = wfY;
-  tiWfH[deckIdx] = wfH;
-  tft.fillRect(0, wfY, 320, wfH, THEME_BG);
+// Clear + draw one zoom column (used inside tft.startWrite batch)
+static void tiDrawZoomColumn(const uint8_t sample[4], int x, int y, int wfH) {
+  tft.drawFastVLine(x, y, wfH, THEME_BG);
+  uint8_t h = sample[3];
+  if (h == 0) return;
+  uint16_t color = rgb3to565(sample[0], sample[1], sample[2]);
+  int barH = (h * wfH) / 31;
+  if (barH < 1) barH = 1;
+  int midY = y + wfH / 2;
+  tft.drawFastVLine(x, midY - barH / 2, barH, color);
+}
 
-  if (tiHasZoomWindow[deckIdx]) {
-    for (int x = 0; x < 320; x++) {
-      tiDrawSampleColumn(tiZoomWindow[deckIdx][x], x, wfY, wfH);
+// Integer sample from dense waveform (no float — faster on ESP32)
+static void tiSampleWave(int deckIdx, long tMs, long durMs, uint8_t out[4]) {
+  uint16_t n = tiWaveN[deckIdx];
+  if (n == 0 || durMs <= 0 || tMs < 0 || tMs >= durMs) {
+    out[0] = out[1] = out[2] = out[3] = 0;
+    return;
+  }
+  // fixed-point index: (tMs * n) / durMs
+  long num = tMs * (long)n;
+  int i0 = (int)(num / durMs);
+  if (i0 < 0) i0 = 0;
+  if (i0 >= (int)n) i0 = (int)n - 1;
+  int i1 = i0 + 1;
+  if (i1 >= (int)n) i1 = i0;
+  int frac = (int)(num % durMs);  // 0..durMs-1
+  out[0] = tiWave[deckIdx][i0][0];
+  out[1] = tiWave[deckIdx][i0][1];
+  out[2] = tiWave[deckIdx][i0][2];
+  int h0 = tiWave[deckIdx][i0][3];
+  int h1 = tiWave[deckIdx][i1][3];
+  out[3] = (uint8_t)(h0 + (int)(((long)(h1 - h0) * frac) / durMs));
+}
+
+static bool tiWaveReady(int deckIdx) {
+  return tiWaveN[deckIdx] > 0 && tiWaveHave[deckIdx] >= tiWaveN[deckIdx]
+         && tiDecks[deckIdx].duration_s > 0;
+}
+
+static void tiZoomWindowMs(int deckIdx, long& windowMs, long& durMs) {
+  TrackDeck& d = tiDecks[deckIdx];
+  durMs = (long)d.duration_s * 1000L;
+  float bpm = d.bpm > 0 ? d.bpm : 120.0f;
+  windowMs = (long)((TI_ZOOM_BEATS * 60000.0f) / bpm);
+  if (windowMs < 500) windowMs = 500;
+  if (durMs > 0 && windowMs > durMs) windowMs = durMs;
+}
+
+// 1 step ≈ 1 screen pixel of scroll (smoother than half-pixel keying)
+static int tiZoomScrollKey(int deckIdx, uint32_t positionMs) {
+  if (!tiWaveReady(deckIdx)) return -1;
+  long windowMs, durMs;
+  tiZoomWindowMs(deckIdx, windowMs, durMs);
+  long startMs = (long)positionMs - windowMs / 2;
+  long pxMs = windowMs / 320;
+  if (pxMs < 1) pxMs = 1;
+  return (int)(startMs / pxMs);
+}
+
+static void tiPaintZoomStrip(int deckIdx, uint32_t positionMs) {
+  TrackDeck& d = tiDecks[deckIdx];
+  int wfY = tiWfY[deckIdx];
+  int wfH = tiWfH[deckIdx];
+  if (wfH <= 0) return;
+
+  long durMs = (long)d.duration_s * 1000L;
+
+  if (!tiWaveReady(deckIdx)) {
+    tft.fillRect(0, wfY, 320, wfH, THEME_BG);
+    if (d.hasWaveform) {
+      tiDrawWaveform(d, wfY, wfH);
+    } else {
+      tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
+      tft.drawCentreString("Loading waveform...", 160, wfY + wfH / 2 - 4, 1);
     }
-  } else if (d.hasWaveform && d.hasPosition && d.duration_s > 0) {
-    // Fallback: synthesize a coarse zoom from the 320 overview strip
-    long durMs = (long)d.duration_s * 1000L;
-    float bpm = d.bpm > 0 ? d.bpm : 120.0f;
-    long windowMs = (long)((8.0f * 60000.0f) / bpm);
-    if (windowMs < 500) windowMs = 500;
-    if (windowMs > durMs) windowMs = durMs;
-    long startMs = (long)d.position_ms - windowMs / 2;
-    for (int x = 0; x < 320; x++) {
-      long tMs = startMs + ((long)x * windowMs) / 320;
-      if (tMs < 0 || tMs >= durMs) continue;
-      int src = (int)(tMs * 320L / durMs);
-      if (src < 0) src = 0;
-      if (src > 319) src = 319;
-      tiDrawSampleColumn(d.waveform[src], x, wfY, wfH);
+    if (d.hasPosition) tiDrawNeedleLine(160, wfY, wfH);
+    else {
+      tft.setTextColor(THEME_WARNING, THEME_BG);
+      tft.drawCentreString("No live playhead", 160, wfY + 2, 1);
     }
-  } else if (d.hasWaveform) {
-    tiDrawWaveform(d, wfY, wfH);
-  } else {
-    tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
-    tft.drawCentreString("No waveform", 160, wfY + wfH / 2 - 4, 1);
+    return;
   }
 
-  // Fixed center playhead
+  long windowMs;
+  tiZoomWindowMs(deckIdx, windowMs, durMs);
+  long startMs = (long)positionMs - windowMs / 2;
+
+  // Reason: batch SPI — full fillRect+320 draws was blocking the loop (stutter)
+  tft.startWrite();
+  uint8_t sample[4];
+  for (int x = 0; x < 320; x++) {
+    long tMs = startMs + ((long)x * windowMs) / 320;
+    tiSampleWave(deckIdx, tMs, durMs, sample);
+    tiDrawZoomColumn(sample, x, wfY, wfH);
+    // Keep WebSocket alive mid-frame so playhead stamps don't bunch up
+    if ((x & 63) == 63 && tiWsConnected) {
+      tft.endWrite();
+      tiWsClient.poll();
+      tft.startWrite();
+    }
+  }
+  tft.endWrite();
+
   if (d.hasPosition) {
     tiDrawNeedleLine(160, wfY, wfH);
   } else {
     tft.setTextColor(THEME_WARNING, THEME_BG);
     tft.drawCentreString("No live playhead", 160, wfY + 2, 1);
   }
+}
+
+static void tiDrawZoomWaveform(int deckIdx, int wfY, int wfH) {
+  tiWfY[deckIdx] = wfY;
+  tiWfH[deckIdx] = wfH;
+  uint32_t pos = tiDecks[deckIdx].hasPosition
+                     ? tiDecks[deckIdx].position_ms
+                     : (uint32_t)tiDecks[deckIdx].duration_s * 500UL;
+  tiPaintZoomStrip(deckIdx, pos);
+  tiLastZoomSrcIdx[deckIdx] = tiZoomScrollKey(deckIdx, pos);
+  tiLastZoomDrawMs = millis();
+  tiLastElapsedSec = -1;
 }
 
 static void tiDrawOverviewStrip(TrackDeck& d, int deckIdx, int y, int h) {
@@ -546,11 +775,14 @@ static void tiDrawOverviewStrip(TrackDeck& d, int deckIdx, int y, int h) {
 
 static String tiFormatDuration(int secs);
 
-static void tiUpdateElapsedLabel(TrackDeck& d) {
+static void tiUpdateElapsedLabel(TrackDeck& d, uint32_t positionMs) {
   if (tiElapsedLabelY <= 0) return;
-  tft.fillRect(200, tiElapsedLabelY, 116, 26, THEME_BG);
   if (!d.hasPosition) return;
-  int secs = (int)(d.position_ms / 1000);
+  int secs = (int)(positionMs / 1000);
+  // Reason: M:SS only changes once/sec — avoid fillRect fighting the zoom paint
+  if (secs == tiLastElapsedSec) return;
+  tiLastElapsedSec = secs;
+  tft.fillRect(200, tiElapsedLabelY, 116, 26, THEME_BG);
   String elapsed = tiFormatDuration(secs);
   tft.setTextColor(TI_NEEDLE_COLOR, THEME_BG);
   int w = tft.textWidth(elapsed, 4);
@@ -563,22 +795,40 @@ static void tiUpdatePlayheads() {
     tiPlayheadDirty = false;
     return;
   }
-  if (!tiPlayheadDirty) return;
-  tiPlayheadDirty = false;
+
+  unsigned long now = millis();
 
   if (tiExpandedDeck == -1) {
+    if (!tiPlayheadDirty) return;
+    tiPlayheadDirty = false;
     for (int i = 0; i < 2; i++) {
       if (tiWfH[i] <= 0) continue;
       tiDrawOverviewNeedle(tiDecks[i], i, tiWfY[i], tiWfH[i]);
     }
-  } else {
-    int i = tiExpandedDeck;
-    if (tiWfH[i] > 0) {
-      tiDrawZoomWaveform(i, tiWfY[i], tiWfH[i]);
-      if (tiOverviewY[i] > 0) {
-        tiDrawOverviewStrip(tiDecks[i], i, tiOverviewY[i], TI_WF_H_OVERVIEW);
-      }
-      tiUpdateElapsedLabel(tiDecks[i]);
+    return;
+  }
+
+  int i = tiExpandedDeck;
+  if (tiWfH[i] <= 0) return;
+
+  uint32_t drawPos = tiExtrapolatedPositionMs(i);
+  tiDecks[i].position_ms = drawPos;
+
+  // Cheap UI first so the clock never freezes during a heavy strip paint
+  tiUpdateElapsedLabel(tiDecks[i], drawPos);
+  if (tiOverviewY[i] > 0 && (tiPlayheadDirty || (now - tiLastOverviewMs) >= 100)) {
+    tiDrawOverviewNeedle(tiDecks[i], i, tiOverviewY[i], TI_WF_H_OVERVIEW);
+    tiLastOverviewMs = now;
+  }
+  tiPlayheadDirty = false;
+
+  // Scroll zoom when the view moved ≥1 screen pixel
+  if (tiDecks[i].hasPosition && (now - tiLastZoomDrawMs) >= TI_ZOOM_REDRAW_MS) {
+    int srcKey = tiZoomScrollKey(i, drawPos);
+    if (srcKey != tiLastZoomSrcIdx[i]) {
+      tiPaintZoomStrip(i, drawPos);
+      tiLastZoomSrcIdx[i] = srcKey;
+      tiLastZoomDrawMs = millis();  // use post-paint time so we don't pile up
     }
   }
 }
@@ -926,7 +1176,7 @@ static void tiDrawDeckExpandedLive(int deckIdx, int baseY) {
   tft.drawString(d.key, 100, row2Y, 4);
 
   if (d.hasPosition) {
-    tiUpdateElapsedLabel(d);
+    tiUpdateElapsedLabel(d, d.position_ms);
   } else if (d.duration_s > 0) {
     tft.setTextColor(THEME_TEXT, THEME_BG);
     String durStr = tiFormatDuration(d.duration_s);
@@ -1052,8 +1302,8 @@ static void tiEnterScreen(TiUiStyle style) {
     tiServerFound = false;
     tiMdnsReady = false;
     memset(tiDecks, 0, sizeof(tiDecks));
-    tiHasZoomWindow[0] = false;
-    tiHasZoomWindow[1] = false;
+    tiClearWave(0);
+    tiClearWave(1);
     tiWsClient.onMessage(tiOnMessage);
     tiWsClient.onEvent(tiOnEvent);
     tiCallbacksReady = true;
@@ -1084,17 +1334,21 @@ void drawLiveViewMode() {
 }
 
 void handleTrackInfoMode() {
-  // Back button - ALWAYS checked first, before any blocking operations
+  // Back button - ALWAYS checked first. Leave UI before any socket/mDNS work
+  // (close/MDNS can block for seconds when the companion is gone).
   if (touch.justPressed &&
       isButtonPressed(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H)) {
-    tiWsClient.close();
     tiWsConnected = false;
+    tiServerFound = false;
+    tiWsStep = TI_WS_STEP_MDNS;
     tiExpandedDeck = -1;
+    exitToMenu();
+    // Cleanup after UI exit — may block; user already sees the menu
+    tiWsClient.close();
     if (tiMdnsReady) {
       MDNS.end();
       tiMdnsReady = false;
     }
-    exitToMenu();
     return;
   }
 
@@ -1170,34 +1424,36 @@ void handleTrackInfoMode() {
     }
   }
 
-  // WebSocket polling
+  // WebSocket polling (skip when down — keeps Back responsive)
   if (tiWsConnected) {
     tiWsClient.poll();
   }
 
-  // Connection/reconnection logic - deferred from draw so back button always works.
-  // mDNS init + queryService can each block for 1-2s, but the back button will
-  // be checked on the very next loop iteration after the block returns.
+  // One blocking reconnect step per interval (mDNS / discover / connect).
+  // Doing all three in one tick froze the UI for several seconds.
   if (!tiWsConnected && wifiConnected) {
     unsigned long now = millis();
     if (now - tiLastReconnect > TI_WS_RECONNECT_MS) {
       tiLastReconnect = now;
-
-      if (!tiMdnsReady) {
+      if (tiWsStep == TI_WS_STEP_MDNS || !tiMdnsReady) {
         if (!MDNS.begin("cyd-dj")) {
           MDNS.end();
           MDNS.begin("cyd-dj");
         }
         tiMdnsReady = true;
-      }
-
-      if (!tiServerFound) {
+        tiWsStep = TI_WS_STEP_DISCOVER;
+      } else if (tiWsStep == TI_WS_STEP_DISCOVER || !tiServerFound) {
         tiDiscoverServer();
-      }
-      if (tiServerFound && !tiWsConnected) {
+        tiWsStep = tiServerFound ? TI_WS_STEP_CONNECT : TI_WS_STEP_DISCOVER;
+      } else {
         tiConnect();
+        if (!tiWsConnected) {
+          tiServerFound = false;  // rediscover next time
+          tiWsStep = TI_WS_STEP_DISCOVER;
+        } else {
+          tiWsStep = TI_WS_STEP_MDNS;
+        }
       }
-      // Only show status if we don't already have track data displayed
       if (!tiDecks[0].hasWaveform && !tiDecks[1].hasWaveform) {
         tiDrawStatus();
       }
@@ -1222,8 +1478,10 @@ void handleTrackInfoMode() {
     tiRedrawContent();
   }
 
-  // Move playhead needle without a full screen redraw
-  tiUpdatePlayheads();
+  // Live needle only while connected (avoid heavy redraws during reconnect)
+  if (tiWsConnected) {
+    tiUpdatePlayheads();
+  }
 
   // Animate title and comment scrolling (runs every loop iteration, self-throttled)
   if (tiExpandedDeck == -1) {

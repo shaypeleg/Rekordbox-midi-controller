@@ -27,6 +27,7 @@ Requires:
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -69,9 +70,17 @@ logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
 
 WS_PORT = 9100
 POLL_INTERVAL = 1.0
-PLAYHEAD_INTERVAL = 0.06  # ~16 Hz — needle + zoom window over WiFi
-WAVEFORM_FULL_POINTS = 4096  # Mac-side strip for zoom slicing
-ZOOM_BEATS = 8.0  # visible zoom window width in beats (~4s if no BPM)
+# Reason: playhead is a clock sync only; CYD extrapolates + scrolls locally.
+PLAYHEAD_INTERVAL = 0.05  # 20 Hz — plenty with on-device extrapolation
+# Dense strip loaded once (chunked). Not embedded in the track JSON.
+CYD_WAVE_POINTS = 2048
+WAVE_CHUNK_COLS = 256  # ~512 raw bytes / chunk — safe for ESP32 heap
+# Set via ./run.sh --playhead-debug or CYD_PLAYHEAD_DEBUG=1
+PLAYHEAD_DEBUG = os.environ.get("CYD_PLAYHEAD_DEBUG", "").strip() in (
+    "1",
+    "true",
+    "yes",
+)
 
 AUDIO_EXTENSIONS = (
     ".mp3", ".m4a", ".wav", ".flac", ".aiff", ".aif",
@@ -461,44 +470,18 @@ def extract_waveform_320(anlz_files) -> Optional[list]:
     return extract_waveform_points(anlz_files, CYD_WIDTH)
 
 
-def slice_wave_window(
-    full_wf: list,
-    duration_ms: int,
-    position_ms: int,
-    bpm: float,
-    width: int = CYD_WIDTH,
-    beats: float = ZOOM_BEATS,
-) -> list:
-    """
-    Slice a zoomed waveform window centered on ``position_ms``.
-
-    Returns ``width`` columns of [r,g,b,h] for the CYD scrolling zoom view.
-    """
-    if not full_wf or duration_ms <= 0 or width <= 0:
-        return [[0, 0, 0, 0] for _ in range(width)]
-
-    n = len(full_wf)
-    if bpm and bpm > 0:
-        window_ms = max(500.0, (beats * 60_000.0) / bpm)
-    else:
-        window_ms = 4000.0
-    window_ms = min(window_ms, float(duration_ms))
-
-    half = window_ms / 2.0
-    start_ms = float(position_ms) - half
-    out: list = []
-    for x in range(width):
-        t_ms = start_ms + (x + 0.5) * (window_ms / width)
-        if t_ms < 0 or t_ms >= duration_ms:
-            out.append([0, 0, 0, 0])
-            continue
-        idx = int(t_ms * n / duration_ms)
-        if idx < 0:
-            idx = 0
-        elif idx >= n:
-            idx = n - 1
-        out.append(full_wf[idx])
-    return out
+def pack_wave_u16(wf: list) -> bytes:
+    """Pack [r,g,b,h] into 2 bytes/col: r3|g3|b3|h5 little-endian uint16."""
+    out = bytearray(len(wf) * 2)
+    for i, pt in enumerate(wf):
+        r = int(pt[0]) & 7
+        g = int(pt[1]) & 7
+        b = int(pt[2]) & 7
+        h = int(pt[3]) & 31
+        v = r | (g << 3) | (b << 6) | (h << 9)
+        out[i * 2] = v & 0xFF
+        out[i * 2 + 1] = (v >> 8) & 0xFF
+    return bytes(out)
 
 
 def extract_hot_cues(content) -> list[dict]:
@@ -523,11 +506,11 @@ def extract_hot_cues(content) -> list[dict]:
     return cues
 
 
-def build_deck_payload(db, filepath: str, slot: str) -> Optional[dict]:
-    """Build the JSON payload for a single deck.
+def build_deck_payload(db, filepath: str, slot: str) -> Optional[tuple[dict, Optional[bytes]]]:
+    """Build metadata JSON + packed high-res waveform bytes for one deck.
 
-    Also returns ``_full_waveform`` (Mac-only, stripped before WebSocket send)
-    used to slice zoom windows for live playhead messages.
+    Returns ``(deck_dict, wave_u16_bytes_or_None)``. Waveform is NOT inside
+    the track JSON — it is sent afterward in small ``type:wave`` chunks.
     """
     content = db.get_content().filter_by(FolderPath=filepath).first()
     if content is None:
@@ -546,19 +529,18 @@ def build_deck_payload(db, filepath: str, slot: str) -> Optional[dict]:
     duration_s = content.Length or 0
     comment = content.Commnt or ""
 
-    # Waveform: overview for CYD + high-res strip for zoom slicing
-    waveform = None
-    full_waveform = None
+    wave_bytes = None
     try:
         anlz_files = db.read_anlz_files(content)
-        waveform = extract_waveform_320(anlz_files)
-        full_waveform = extract_waveform_points(anlz_files, WAVEFORM_FULL_POINTS)
+        wave_hi = extract_waveform_points(anlz_files, CYD_WAVE_POINTS)
+        if wave_hi:
+            wave_bytes = pack_wave_u16(wave_hi)
     except Exception as e:
         log.warning(f"Waveform extraction failed for {slot}: {e}")
 
     hot_cues = extract_hot_cues(content)
 
-    return {
+    deck = {
         "slot": slot,
         "title": title,
         "artist": artist,
@@ -567,9 +549,8 @@ def build_deck_payload(db, filepath: str, slot: str) -> Optional[dict]:
         "duration_s": duration_s,
         "comment": comment,
         "hot_cues": hot_cues,
-        "waveform": waveform,
-        "_full_waveform": full_waveform,
     }
+    return deck, wave_bytes
 
 
 class NowPlayingState:
@@ -579,11 +560,15 @@ class NowPlayingState:
         self.clients: set = set()
         self.tracker = DeckTracker()
         self.current_payload: str = json.dumps({"type": "track", "decks": []})
+        self.wave_blobs: dict[str, bytes] = {}  # slot -> packed u16 waveform
         self._db = None
         self.deck_titles: list[str] = []
-        self.deck_meta: dict[str, dict] = {}  # slot -> duration_ms, bpm, full_wf
         self._last_playhead_pos: dict[str, int] = {}
+        self._ph_stall: dict[str, int] = {}
+        self._ph_paused: dict[str, bool] = {}
+        self._ph_log_at: float = 0.0
         self.rkbx: Optional[object] = None
+        self.playhead_debug: bool = PLAYHEAD_DEBUG
 
     def _get_db(self):
         if self._db is None:
@@ -596,6 +581,7 @@ class NowPlayingState:
         log.info(f"Client connected ({len(self.clients)} total)")
         try:
             await ws.send(self.current_payload)
+            await self._send_waves_to(ws)
         except websockets.ConnectionClosed:
             pass
 
@@ -614,6 +600,43 @@ class NowPlayingState:
                 disconnected.add(ws)
         self.clients -= disconnected
 
+    async def _send_waves_to(self, ws) -> None:
+        """Send chunked high-res waveforms to one client."""
+        for slot, blob in self.wave_blobs.items():
+            n = len(blob) // 2
+            for off in range(0, n, WAVE_CHUNK_COLS):
+                end = min(off + WAVE_CHUNK_COLS, n)
+                chunk = blob[off * 2 : end * 2]
+                msg = json.dumps({
+                    "type": "wave",
+                    "slot": slot,
+                    "off": off,
+                    "n": n,
+                    "data": base64.b64encode(chunk).decode("ascii"),
+                })
+                await ws.send(msg)
+                await asyncio.sleep(0.02)
+
+    async def broadcast_waves(self) -> None:
+        """Send chunked waveforms to all clients (after a track update)."""
+        if not self.clients or not self.wave_blobs:
+            return
+        for slot, blob in self.wave_blobs.items():
+            n = len(blob) // 2
+            log.info(f"  Wave {slot}: {n} cols in chunks of {WAVE_CHUNK_COLS}")
+            for off in range(0, n, WAVE_CHUNK_COLS):
+                end = min(off + WAVE_CHUNK_COLS, n)
+                chunk = blob[off * 2 : end * 2]
+                msg = json.dumps({
+                    "type": "wave",
+                    "slot": slot,
+                    "off": off,
+                    "n": n,
+                    "data": base64.b64encode(chunk).decode("ascii"),
+                })
+                await self.broadcast(msg)
+                await asyncio.sleep(0.02)
+
     def _merge_playhead_into_decks(self, decks: list[dict]) -> None:
         """Attach position_ms from rkbx_link when available (full track msgs)."""
         if self.rkbx is None or build_playhead_decks is None:
@@ -624,23 +647,62 @@ class NowPlayingState:
                 if deck.get("slot") == entry["slot"]:
                     deck["position_ms"] = entry["position_ms"]
 
-    def _attach_wave_windows(self, decks: list[dict]) -> None:
-        """Add zoomed wave_window columns centered on each deck's playhead."""
+    def _log_playhead_debug(self, decks: list[dict]) -> None:
+        """Throttle playhead traces so they can be lined up with CYD Serial."""
+        if not self.playhead_debug:
+            return
+        now = time.monotonic()
+        force = False
         for entry in decks:
-            slot = entry.get("slot")
-            meta = self.deck_meta.get(slot or "")
-            if not meta or not meta.get("full_wf"):
-                continue
-            bpm = float(entry.get("bpm") or meta.get("bpm") or 0.0)
-            entry["wave_window"] = slice_wave_window(
-                meta["full_wf"],
-                int(meta["duration_ms"]),
-                int(entry["position_ms"]),
-                bpm,
-            )
+            slot = entry["slot"]
+            pos = int(entry["position_ms"])
+            raw = int(entry.get("raw_ms", pos))
+            prev = self._last_playhead_pos.get(slot)
+            if prev is None:
+                d_in = 0
+                stall = 0
+            else:
+                d_in = pos - prev
+                # Any real move (fwd or back) clears stall; flat = possible pause
+                if abs(d_in) > 8:
+                    stall = 0
+                else:
+                    stall = self._ph_stall.get(slot, 0) + 1
+            self._ph_stall[slot] = stall
+            # Flat output = paused or bridge plateau (not the snap-back bug)
+            paused = stall >= 3
+            was = self._ph_paused.get(slot, False)
+            if paused != was:
+                force = True
+                log.info(
+                    "[PH] slot=%s PAUSE→%s at in=%d raw=%d",
+                    slot,
+                    "YES" if paused else "NO",
+                    pos,
+                    raw,
+                )
+            self._ph_paused[slot] = paused
+            entry["_dbg_d_in"] = d_in
+            entry["_dbg_stall"] = stall
+            entry["_dbg_paused"] = int(paused)
+
+        if force or (now - self._ph_log_at) >= 0.2:
+            self._ph_log_at = now
+            parts = []
+            for entry in decks:
+                parts.append(
+                    f"{entry['slot']}:in={entry['position_ms']}"
+                    f":raw={entry.get('raw_ms', '?')}"
+                    f":d_in={entry.get('_dbg_d_in', 0):+d}"
+                    f":osc_age={entry.get('osc_age_ms', '?')}"
+                    f":chg_age={entry.get('changed_age_ms', '?')}"
+                    f":paused={entry.get('_dbg_paused', 0)}"
+                    f":stall={entry.get('_dbg_stall', 0)}"
+                )
+            log.info("[PH] %s", " | ".join(parts))
 
     async def broadcast_playhead(self):
-        """Push playhead + zoom window if position moved enough to matter."""
+        """Push tiny position-only playhead msgs; CYD scrolls zoom locally."""
         if (
             self.rkbx is None
             or not getattr(self.rkbx, "available", False)
@@ -654,24 +716,17 @@ class NowPlayingState:
         if not decks:
             return
 
-        # Skip broadcast if nothing moved by at least ~1 zoom-pixel (~window/320)
-        moved = False
+        self._log_playhead_debug(decks)
+        slim = []
         for entry in decks:
-            slot = entry["slot"]
             pos = int(entry["position_ms"])
-            prev = self._last_playhead_pos.get(slot)
-            meta = self.deck_meta.get(slot) or {}
-            bpm = float(entry.get("bpm") or meta.get("bpm") or 120.0)
-            window_ms = max(500.0, (ZOOM_BEATS * 60_000.0) / bpm)
-            min_delta = max(8, int(window_ms / CYD_WIDTH))
-            if prev is None or abs(pos - prev) >= min_delta:
-                moved = True
-            self._last_playhead_pos[slot] = pos
-        if not moved:
-            return
-
-        self._attach_wave_windows(decks)
-        payload = json.dumps({"type": "playhead", "decks": decks})
+            self._last_playhead_pos[entry["slot"]] = pos
+            slim.append({
+                "slot": entry["slot"],
+                "position_ms": pos,
+                **({"bpm": entry["bpm"]} if "bpm" in entry else {}),
+            })
+        payload = json.dumps({"type": "playhead", "decks": slim})
         await self.broadcast(payload)
 
     async def poll_once(self):
@@ -687,7 +742,7 @@ class NowPlayingState:
         active_paths = [p for p in deck_paths if p is not None]
         if not active_paths:
             self.deck_titles = []
-            self.deck_meta = {}
+            self.wave_blobs = {}
             self._last_playhead_pos = {}
             self.current_payload = json.dumps({"type": "track", "decks": []})
             await self.broadcast(self.current_payload)
@@ -695,26 +750,25 @@ class NowPlayingState:
 
         db = self._get_db()
         decks = []
-        meta: dict[str, dict] = {}
+        waves: dict[str, bytes] = {}
         for i, fp in enumerate(active_paths):
             slot = chr(65 + i)
-            deck = build_deck_payload(db, fp, slot)
-            if deck:
-                full_wf = deck.pop("_full_waveform", None)
-                meta[slot] = {
-                    "full_wf": full_wf,
-                    "duration_ms": int(deck.get("duration_s") or 0) * 1000,
-                    "bpm": float(deck.get("bpm") or 0.0),
-                }
-                decks.append(deck)
-                log.info(f"  Deck {slot}: {deck['title']} - {deck['artist']}")
+            built = build_deck_payload(db, fp, slot)
+            if not built:
+                continue
+            deck, wave_bytes = built
+            decks.append(deck)
+            if wave_bytes:
+                waves[slot] = wave_bytes
+            log.info(f"  Deck {slot}: {deck['title']} - {deck['artist']}")
 
-        self.deck_meta = meta
         self.deck_titles = [d["title"] for d in decks]
+        self.wave_blobs = waves
         self._last_playhead_pos = {}
         self._merge_playhead_into_decks(decks)
         self.current_payload = json.dumps({"type": "track", "decks": decks})
         await self.broadcast(self.current_payload)
+        await self.broadcast_waves()
 
 
 state = NowPlayingState()
@@ -779,6 +833,7 @@ CYD companion app — Track Info server + Auto Cue crossfader relay.
 Usage:
   ./run.sh              Start normally
   ./run.sh -d           Start with DDJ-REV5 MIDI diagnostic (prints controls)
+  ./run.sh --playhead-debug   Log playhead ticks (pair with CYD Serial)
   ./run.sh -resign      macOS one-time: re-sign Rekordbox for live playhead
   ./run.sh -stop        Kill background rkbx_link / BeatKeeper
   ./run.sh --no-rkbx    Skip rkbx_link (static waveform only)
@@ -815,6 +870,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Print live DDJ-REV5 MIDI activity to the terminal",
     )
     parser.add_argument(
+        "-p", "--playhead-debug",
+        action="store_true",
+        help="Log playhead ticks (~5 Hz) for CYD Serial correlation",
+    )
+    parser.add_argument(
         "-h", "--help",
         action="store_true",
         help="Show help and exit",
@@ -822,7 +882,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def main(diagnostic: bool = False):
+async def main(diagnostic: bool = False, playhead_debug: bool = False):
+    if playhead_debug:
+        state.playhead_debug = True
+    if state.playhead_debug:
+        log.info("Playhead debug ON — look for [PH] lines (pair with CYD Serial)")
     ip = get_local_ip()
     log.info(f"Starting Now-Playing server on {ip}:{WS_PORT}")
 
@@ -880,4 +944,9 @@ if __name__ == "__main__":
     if args.help:
         print(HELP_TEXT)
         sys.exit(0)
-    asyncio.run(main(diagnostic=args.diagnostic))
+    asyncio.run(
+        main(
+            diagnostic=args.diagnostic,
+            playhead_debug=args.playhead_debug,
+        )
+    )

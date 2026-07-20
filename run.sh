@@ -6,6 +6,7 @@
 # Usage:
 #   ./run.sh              normal
 #   ./run.sh -d           + DDJ-REV5 MIDI diagnostic
+#   ./run.sh --playhead-debug   log playhead ticks (pair with CYD Serial)
 #   ./run.sh -h           help
 #   ./run.sh --no-rkbx    skip rkbx_link (static waveform only)
 #   ./run.sh -resign      one-time macOS: re-sign Rekordbox for memory access
@@ -92,7 +93,7 @@ detect_rekordbox_version() {
     | head -1
 }
 
-# macOS community offsets only ship for 7.2.8 — warn loudly on mismatch.
+# macOS offsets: community 7.2.8 + project-authored 7.2.16 (single-deck hop).
 warn_if_rekordbox_unsupported() {
   if [[ "$(uname -s)" != "Darwin" ]]; then
     return 0
@@ -104,24 +105,24 @@ warn_if_rekordbox_unsupported() {
   # Compare major.minor.patch prefix (ignore build suffix like .0342)
   local short
   short="$(echo "${ver}" | awk -F. '{print $1"."$2"."$3}')"
-  local supported="7.2.8"
-  if [[ "${short}" != "${supported}" ]]; then
-    cat >&2 <<EOF
+  case "${short}" in
+    7.2.8|7.2.16)
+      echo "[run.sh] Rekordbox ${ver} — macOS offsets available (${short})."
+      if [[ "${short}" == "7.2.16" ]]; then
+        echo "[run.sh] Note: 7.2.16 playhead verified for one deck hop (0x8); map others via probe-hops."
+      fi
+      ;;
+    *)
+      cat >&2 <<EOF
 [run.sh] ************************************************************
 [run.sh] WARNING: Rekordbox ${ver} detected.
-[run.sh] macOS rkbx_link offsets currently only support ${supported}.
-[run.sh] Live playhead will NOT work (memory read fails → no OSC /time).
+[run.sh] macOS offsets in this project cover 7.2.8 and 7.2.16 only.
+[run.sh] Live playhead may NOT work (memory read fails → no OSC /time).
 [run.sh] Track Info waveform/cues still work; needle stays offline.
-[run.sh]
-[run.sh] Options:
-[run.sh]   1) Install Rekordbox ${supported} (only version with Mac offsets)
-[run.sh]   2) Watch https://github.com/grufkork/rkbx_link/issues/55 for
-[run.sh]      newer macOS offsets
 [run.sh] ************************************************************
 EOF
-  else
-    echo "[run.sh] Rekordbox ${ver} matches macOS rkbx_link offsets (${supported})."
-  fi
+      ;;
+  esac
 }
 
 resign_rekordbox() {
@@ -221,6 +222,7 @@ CYD companion launcher
 Usage:
   ./run.sh              Start rkbx_link + Track Info server + crossfader relay
   ./run.sh -d           Same, plus DDJ-REV5 MIDI diagnostic
+  ./run.sh --playhead-debug   Log playhead ticks (pair with CYD Serial @ 115200)
   ./run.sh --no-rkbx    Skip rkbx_link (static waveform only)
   ./run.sh -resign      macOS one-time: re-sign Rekordbox for live playhead
   ./run.sh -stop        Kill background rkbx_link / BeatKeeper

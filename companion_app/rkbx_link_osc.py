@@ -20,7 +20,11 @@ log = logging.getLogger("rkbx_osc")
 
 OSC_LISTEN_HOST = "127.0.0.1"
 OSC_LISTEN_PORT = 4460  # rkbx_link default osc.destination port
-STALE_AFTER_S = 2.0
+# Reason: Mac 7.2.16 /N/time can gap 1–2s+; keep last sample usable a bit longer
+STALE_AFTER_S = 4.0
+# Bridge sparse OSC while playing. Hold at raw+MAX (plateau) — do NOT snap
+# back to raw (that caused advance→rewind sawtooth every ~0.7s).
+MAX_BRIDGE_S = 2.0
 
 
 @dataclass
@@ -32,10 +36,40 @@ class DeckTransport:
     title: str = ""
     artist: str = ""
     updated_at: float = 0.0
+    # Reason: rkbx may re-send the same /N/time for 1–2s; track real advances.
+    # None = never set (don't use <=0 — monotonic can be near 0 at process start).
+    position_changed_at: Optional[float] = None
+    last_delta_s: float = 0.0  # last raw move; <0 means scratch/seek back
 
     @property
     def position_ms(self) -> int:
         return max(0, int(self.position_s * 1000.0))
+
+    def extrapolated_position_s(self, now: Optional[float] = None) -> float:
+        """
+        Advance position by wall time since the playhead last *changed*.
+
+        rkbx_link on Mac often holds a flat /N/time for ~1–2s then jumps.
+        Bridge those gaps, then plateau at raw+MAX_BRIDGE (no snap-back).
+        Scratch-back disables forward bridging.
+        """
+        if self.position_changed_at is None:
+            return self.position_s
+        t = time.monotonic() if now is None else now
+        changed_age = max(0.0, t - self.position_changed_at)
+        osc_age = (
+            max(0.0, t - self.updated_at) if self.updated_at > 0 else 999.0
+        )
+        # Scratch / seek back — follow raw only
+        if self.last_delta_s < -0.02:
+            return self.position_s
+        # Fresh OSC repeats of the same time → truly paused at raw
+        if changed_age > 0.25 and osc_age < 0.20:
+            return self.position_s
+        # Plateau (smooth); snap-back to raw was the sawtooth in logs
+        if changed_age > MAX_BRIDGE_S:
+            return self.position_s + MAX_BRIDGE_S
+        return self.position_s + changed_age
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
         if self.updated_at <= 0:
@@ -74,13 +108,21 @@ def match_deck_index(
     ``fallback_index`` (0→deck1, 1→deck2) when that deck has fresh data.
     """
     want = normalize_title(slot_title)
+    fb = fallback_index + 1  # 0-based slot → 1-based rkbx deck
     if want:
-        for n, transport in rkbx_state.decks.items():
-            if transport.is_fresh() and normalize_title(transport.title) == want:
-                return n
+        matches = [
+            n
+            for n, transport in rkbx_state.decks.items()
+            if transport.is_fresh() and normalize_title(transport.title) == want
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Same track on multiple decks — keep slot→deck stable
+            if fb in matches:
+                return fb
+            return matches[0]
 
-    # fallback_index is 0-based slot → 1-based rkbx deck
-    fb = fallback_index + 1
     transport = rkbx_state.decks.get(fb)
     if transport is not None and transport.is_fresh():
         return fb
@@ -110,9 +152,17 @@ def build_playhead_decks(
         transport = rkbx_state.deck(deck_n)
         if not transport.is_fresh(now):
             continue
+        # Bridge rkbx flat-/jump /N/time; CYD hard-syncs each tick (≤100ms).
+        pos_s = transport.extrapolated_position_s(now)
+        chg_at = transport.position_changed_at
         entry: dict = {
             "slot": chr(65 + i),
-            "position_ms": transport.position_ms,
+            "position_ms": max(0, int(pos_s * 1000.0)),
+            "raw_ms": transport.position_ms,
+            "osc_age_ms": int(max(0.0, now - transport.updated_at) * 1000.0),
+            "changed_age_ms": (
+                int(max(0.0, now - chg_at) * 1000.0) if chg_at is not None else 0
+            ),
         }
         if transport.bpm > 0:
             entry["bpm"] = round(transport.bpm, 2)
@@ -162,10 +212,19 @@ class RkbxLinkOscReceiver:
         if target is None:
             return
         try:
-            target.position_s = float(args[0])
+            new_pos = float(args[0])
         except (TypeError, ValueError):
             return
-        self._mark(target)
+        now = time.monotonic()
+        delta = new_pos - target.position_s
+        # ≥5ms move counts as a real advance (not float noise)
+        if target.position_changed_at is None or abs(delta) >= 0.005:
+            target.last_delta_s = delta
+            target.position_changed_at = now
+        target.position_s = new_pos
+        target.updated_at = now
+        if self.on_update is not None:
+            self.on_update()
 
     def _on_bpm(self, address: str, *args) -> None:
         if not args:

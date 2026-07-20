@@ -1,4 +1,6 @@
 .DS_Store
+__pycache__/
+*.pyc
 
 # Vendored rkbx_link (GPL-3.0) — cloned/downloaded by run.sh
 companion_app/.vendor/

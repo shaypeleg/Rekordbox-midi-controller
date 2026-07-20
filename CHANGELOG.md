@@ -4,6 +4,84 @@ All notable changes to this project are documented in this file.
 
 ## 2026-07-20
 
+### Fixed - playhead sawtooth + stuck Back on disconnect
+
+0.7s bridge snapped `in` back to `raw` every OSC gap (advance→rewind).
+Restored 2s bridge with plateau hold (no snap-back); scratch-back still
+disables forward extrap. LIVE VIEW reconnect is one mDNS/discover/connect
+step per tick and Back exits UI before socket close (was blocking).
+
+### Fixed - false pause from sparse rkbx /N/time
+
+Logs showed companion `in=` flat for 1–2s then `d_in=+2000` — rkbx_link
+bursts, not a stuck server. Pause detector treated gaps as pause. Companion
+bridges from `position_changed_at` (ignores same-time heartbeats).
+
+### Added - playhead debug logs (Serial + server)
+
+`TI_PLAYHEAD_DEBUG` on CYD (Serial 115200) and `./run.sh --playhead-debug`
+on the companion both emit `[PH]` lines (~5 Hz + pause edges) so lag/pause
+issues can be correlated.
+
+### Fixed - multi-second lag / keeps moving after stop
+
+Soft-rebase kept extrapolating past a paused playhead (~4s overrun) and
+drifted until a periodic forward jump. CYD now hard-syncs each packet,
+freezes when position stops advancing, and only bridges ≤100ms between
+ticks. rkbx_link `delay_compensation` default 2500→0.
+
+### Fixed - waveform scrubbing forward/back without jog
+
+Playhead was extrapolated on both the companion and the CYD; delayed WS
+packets snapped time backward, so the zoom strip reversed then jumped.
+Server now sends raw OSC position; CYD extrapolates alone. Duplicate
+titles map stably to slot decks.
+
+### Tuned - LIVE VIEW scroll stutter
+
+Full-strip `fillRect` + 320 column redraws blocked the ESP32 loop (clock
+froze then jumped). Zoom paint now batches SPI (`startWrite`), clears
+per-column, polls WebSocket mid-frame, updates the M:SS clock only when
+the second changes, and keys scroll to whole screen pixels.
+
+### Simplified - load once, stream playhead only
+
+Architecture cleanup for LIVE VIEW:
+- Track JSON = metadata only (title, BPM, key, cues, …)
+- Dense color waveform (2048 cols, packed 2 bytes/col) sent afterward in
+  small `type:wave` chunks into CYD RAM
+- Ongoing WS traffic = playhead position only (~20 Hz); CYD extrapolates
+  and scrolls locally (~30 Hz) with height interpolation
+- Fixes prior OOM disconnects from fat track/playhead JSON
+
+### Fixed - CYD disconnect/crash after WebSocket connect
+
+Track payloads with embedded hi-res blobs OOM-crashed the ESP32 after
+connect (superseded by chunked wave load above).
+
+### Tuned - LIVE VIEW high-res zoom without stuck/jump
+
+Video showed clock frozen (e.g. 0:44) then jumping (0:50): ESP32 blocked on
+full TFT redraws. (Superseded by on-device zoom scroll fix above.)
+
+### Added - Mac Rekordbox 7.2.16 playhead offsets (single-deck)
+
+Community rkbx_link Mac offsets only covered 7.2.8. Project now ships
+`companion_app/data/offsets-macos-7.2.16` (chain `B31CC40 8 550 120/188`,
+verified via memory RE). `ensure_rkbx_link.sh` merges it into the vendored
+`offsets-macos` and sets `keeper.rekordbox_version` from the installed app.
+Other deck hops still need mapping with `probe-hops`.
+
+Fix: rkbx_link only registers a version block after two trailing blank lines —
+without that, 7.2.16 was present in the file but never loaded (`available: ["7.2.8"]`).
+
+### Added - Rekordbox macOS memory scanner (offset RE helper)
+
+`companion_app/scripts/rb_memory_scan.py` attaches to a resigned Rekordbox
+process (sudo) for BPM/sample discovery (`live-triage`), pointer tracing
+(`ptrs`, `trace-up`, `find-chain`), and offset authoring beyond community
+Mac 7.2.8 (e.g. 7.2.16).
+
 ### Changed - Menu: LIVE VIEW, TRACK, SCROLL, SCREENS
 
 Bottom row is now **LIVE VIEW** (zoomed playhead), **TRACK** (classic
